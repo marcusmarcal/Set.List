@@ -1,4 +1,48 @@
 <?php
+// Função para obter um token de acesso
+function getAccessToken() {
+    $clientId = getenv('SPOTIPY_CLIENT_ID');
+    $clientSecret = getenv('SPOTIPY_CLIENT_SECRET');
+    $url = 'https://accounts.spotify.com/api/token';
+    $headers = [
+        'Authorization: Basic ' . base64_encode($clientId . ':' . $clientSecret),
+        'Content-Type: application/x-www-form-urlencoded'
+    ];
+    $body = 'grant_type=client_credentials';
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    $result = json_decode($response, true);
+    return $result['access_token'];
+}
+
+// Função para atualizar a ordem das faixas na playlist do Spotify
+function updatePlaylistOrder($accessToken, $playlistId, $trackUris) {
+    $url = "https://api.spotify.com/v1/playlists/$playlistId/tracks";
+    $headers = [
+        'Authorization: Bearer ' . $accessToken,
+        'Content-Type: application/json'
+    ];
+    $body = json_encode([
+        'uris' => $trackUris
+    ]);
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_PUT, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    return json_decode($response, true);
+}
+
 // Lê o conteúdo do arquivo JSON
 $jsonFile = 'songs.json';
 $jsonData = file_get_contents($jsonFile);
@@ -49,6 +93,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['order'])) {
         }
         writeJson($jsonFile, $sortedSongs);
         $songs = $sortedSongs;
+
+        // Atualiza a ordem no Spotify
+        $playlistId = '4pcomesNQA6DPXj1HFpOjf'; // ID da playlist
+        $accessToken = getAccessToken();
+        $trackUris = array_map(function($song) {
+            return $song['uri']; // Supondo que cada música tem um campo 'uri' com o URI da faixa no Spotify
+        }, $sortedSongs);
+        updatePlaylistOrder($accessToken, $playlistId, $trackUris);
     }
 }
 
@@ -161,6 +213,7 @@ function writeJson($file, $data) {
     <div class="container">
         <a href="add.php" class="button">Adicionar Música</a>
         <a href="import.php" class="button">Importar Músicas</a>
+        <a href="print_songs.php" class="button">Imprimir</a>
 
         <table id="songsTable">
             <thead>
