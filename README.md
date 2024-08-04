@@ -75,6 +75,6 @@ Contribuições são bem-vindas! Sinta-se à vontade para abrir issues ou pull r
 
 ## Autor
 
-Desenvolvido por [Seu Nome]. 
+Desenvolvido por Marcus Marcal. 
 
-Entre em contato em [seu-email@example.com] para dúvidas ou suporte.
+Entre em contato em marcus.marcal@gmail.com para dúvidas ou suporte.
