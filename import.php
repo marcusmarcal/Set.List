@@ -1,4 +1,10 @@
 <?php
+// Autoload do Composer
+require 'vendor/autoload.php';
+
+// Carregar variáveis de ambiente do arquivo .env
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+$dotenv->load();
 
 // Função para obter um token de acesso
 function getAccessToken($clientId, $clientSecret) {
@@ -37,9 +43,9 @@ function getPlaylistTracks($accessToken, $playlistId) {
 }
 
 // IDs do cliente Spotify
-$clientId = 'e63479e325f84a8bb2612abd17df6742';
-$clientSecret = '3d038106b01247c2a246993b819937ed';
-$playlistId = '4pcomesNQA6DPXj1HFpOjf';
+$clientId = $_ENV['CLIENT_ID'];
+$clientSecret = $_ENV['CLIENT_SECRET'];
+$playlistId = $_ENV['PLAYLIST_ID'];
 
 // Obtenha o token de acesso
 $accessToken = getAccessToken($clientId, $clientSecret);
