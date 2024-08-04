@@ -131,9 +131,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <label for="artist">Artista:</label>
             <input type="text" id="artist" name="artist" required>
 
-            <label for="cifra_url">URL da Cifra:</label>
-            <input type="text" id="cifra_url" name="cifra_url">
-
             <button type="submit">Adicionar Música</button>
             <a href="index.php" class="button">Voltar</a>
         </form>
