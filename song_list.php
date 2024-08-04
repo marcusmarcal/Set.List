@@ -50,11 +50,11 @@ $songs = sortSongs($songs, $sortColumn, $sortOrder);
             background-color: #18242c; /* Cor de fundo da página */
             margin: 0;
             padding: 0;
-            color: #a1897b; /* Cor do texto */
+            color: white; /* Cor do texto */
         }
         header {
             background: #404044; /* Cor de fundo do cabeçalho */
-            color: #a1897b; /* Cor do texto no cabeçalho */
+            color: white; /* Cor do texto no cabeçalho */
             padding: 20px 0;
             text-align: center;
         }
