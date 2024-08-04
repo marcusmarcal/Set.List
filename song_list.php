@@ -47,14 +47,14 @@ $songs = sortSongs($songs, $sortColumn, $sortOrder);
     <style>
         body {
             font-family: Arial, sans-serif;
-            background-color: #f5f5f5;
+            background-color: #18242c; /* Cor de fundo da página */
             margin: 0;
             padding: 0;
-            color: #5d4037;
+            color: #a1897b; /* Cor do texto */
         }
         header {
-            background: #3e2723;
-            color: #fff;
+            background: #404044; /* Cor de fundo do cabeçalho */
+            color: #a1897b; /* Cor do texto no cabeçalho */
             padding: 20px 0;
             text-align: center;
         }
@@ -67,31 +67,32 @@ $songs = sortSongs($songs, $sortColumn, $sortOrder);
             width: 100%;
             border-collapse: collapse;
             margin: 20px 0;
-            background: #fff;
+            background: #404044; /* Cor de fundo da tabela */
             border-radius: 5px;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
         }
         th, td {
             padding: 15px;
             text-align: left;
-            border-bottom: 1px solid #ddd;
+            border-bottom: 1px solid #a1897b; /* Cor da borda das células */
+            color: #a1897b; /* Cor do texto das células */
         }
         th {
-            background-color: #6d4c41;
-            color: white;
+            background-color: #18242c; /* Cor de fundo dos cabeçalhos da tabela */
+            color: #a1897b; /* Cor do texto dos cabeçalhos */
             cursor: pointer;
             position: sticky;
             top: 0;
             z-index: 1;
         }
         th:hover {
-            background-color: #5d4037;
+            background-color: #404044; /* Cor de fundo do cabeçalho da tabela ao passar o mouse */
         }
         tbody tr:nth-child(even) {
-            background-color: #fbe9e7;
+            background-color: #404044; /* Cor de fundo das linhas pares */
         }
         tbody tr:hover {
-            background-color: #efebe9;
+            background-color: #18242c; /* Cor de fundo das linhas ao passar o mouse */
         }
     </style>
 </head>
