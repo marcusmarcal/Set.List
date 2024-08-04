@@ -114,7 +114,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </header>
 
     <div class="container">
-        <form action="" method="POST">
+        <a href="index.php" class="button">Home</a>    
+        <a href="add.php" class="button">Adicionar Música</a>
+        <a href="import.php" class="button">Importar Músicas</a>
+        <a href="print_songs.php" class="button">Imprimir</a>
+        <a href="song_list.php" class="button">Lista de Músicas</a>
+    
+    <form action="" method="POST">
             <?php if (isset($error)): ?>
                 <div class="error"><?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
