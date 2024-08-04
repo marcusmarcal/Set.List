@@ -68,5 +68,34 @@ foreach ($playlistTracks['items'] as $item) {
 $jsonFile = 'songs.json';
 file_put_contents($jsonFile, json_encode($songs, JSON_PRETTY_PRINT));
 
-echo "Músicas importadas com sucesso!";
 ?>
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Importação Concluída</title>
+    <!-- Redireciona para index.php após 2 segundos -->
+    <meta http-equiv="refresh" content="2;url=index.php">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+        }
+        .message {
+            background-color: #e8f5e9;
+            color: #4caf50;
+            padding: 20px;
+            border-radius: 5px;
+            display: inline-block;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="message">
+        <h1>Importação Concluída!</h1>
+        <p>Você será redirecionado para a página inicial em 2 segundos.</p>
+    </div>
+</body>
+</html>

@@ -63,7 +63,7 @@ function writeJson($file, $data) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lista de Músicas</title>
+    <title>Marcvs Marcal - Lista de Músicas</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
     <style>
@@ -100,7 +100,7 @@ function writeJson($file, $data) {
         }
         th {
             background-color: #388e3c;
-            color: #111;
+            color: white;
             cursor: pointer;
             position: sticky;
             top: 0;
@@ -155,11 +155,12 @@ function writeJson($file, $data) {
 </head>
 <body>
     <header>
-        <h1>Lista de Músicas</h1>
+        <h1>Marcvs Marcal - Lista de Músicas</h1>
     </header>
 
     <div class="container">
         <a href="add.php" class="button">Adicionar Música</a>
+        <a href="import.php" class="button">Importar Músicas</a>
 
         <table id="songsTable">
             <thead>
