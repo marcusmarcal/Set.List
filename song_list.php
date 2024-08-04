@@ -75,11 +75,11 @@ $songs = sortSongs($songs, $sortColumn, $sortOrder);
             padding: 15px;
             text-align: left;
             border-bottom: 1px solid #a1897b; /* Cor da borda das células */
-            color: #a1897b; /* Cor do texto das células */
+            color: white; /* Cor do texto das células */
         }
         th {
             background-color: #18242c; /* Cor de fundo dos cabeçalhos da tabela */
-            color: #a1897b; /* Cor do texto dos cabeçalhos */
+            color: white; /* Cor do texto dos cabeçalhos */
             cursor: pointer;
             position: sticky;
             top: 0;
@@ -93,6 +93,10 @@ $songs = sortSongs($songs, $sortColumn, $sortOrder);
         }
         tbody tr:hover {
             background-color: #18242c; /* Cor de fundo das linhas ao passar o mouse */
+        }
+        a
+        {
+            color: white
         }
     </style>
 </head>
