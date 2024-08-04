@@ -214,6 +214,8 @@ function writeJson($file, $data) {
         <a href="add.php" class="button">Adicionar Música</a>
         <a href="import.php" class="button">Importar Músicas</a>
         <a href="print_songs.php" class="button">Imprimir</a>
+        <a href="song_list.php" class="button">Lista de Músicas</a>
+        
 
         <table id="songsTable">
             <thead>
