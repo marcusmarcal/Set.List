@@ -102,10 +102,23 @@ tbody tr:hover {
     background-color: #d9fbe1; /* Light green on row hover */
 }
 
-        a
-        {
-            color: white
-        }
+a
+{
+    color: white
+}
+.button {
+    padding: 10px 20px;
+    color: white;
+    background-color: #4caf50;
+    border: none;
+    border-radius: 5px;
+    text-decoration: none;
+    display: inline-block;
+    margin: 5px;
+}
+.button:hover {
+    background-color: #388e3c;
+}
     </style>
 </head>
 <body>
