@@ -60,7 +60,7 @@ foreach ($playlistTracks['items'] as $item) {
     $songs[] = [
         'title' => $track['name'],
         'artist' => $track['artists'][0]['name'],
-        'key' => 'N/A' // Tonalidade não disponível diretamente na API
+        #'key' => 'N/A' // Tonalidade não disponível diretamente na API
     ];
 }
 
