@@ -16,11 +16,19 @@ $handle = fopen($csvFile, 'w');
 if (!empty($songs)) {
     // Obtém as chaves do primeiro item do array para criar o cabeçalho
     $header = array_keys($songs[0]);
-    fputcsv($handle, $header);
+
+    // Escreve o cabeçalho sem aspas
+    fwrite($handle, implode(",", $header) . PHP_EOL);
 
     // Escreve os dados das músicas no CSV
     foreach ($songs as $song) {
-        fputcsv($handle, $song);
+        // Remove aspas de valores e implode para CSV
+        $line = implode(",", array_map(function($value) {
+            return str_replace('"', '', $value);
+        }, $song));
+
+        // Escreve a linha no arquivo CSV
+        fwrite($handle, $line . PHP_EOL);
     }
 }
 
