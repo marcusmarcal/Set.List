@@ -1,272 +1,180 @@
 <?php
-// Função para obter um token de acesso
-function getAccessToken() {
-    $clientId = getenv('SPOTIPY_CLIENT_ID');
-    $clientSecret = getenv('SPOTIPY_CLIENT_SECRET');
-    $url = 'https://accounts.spotify.com/api/token';
-    $headers = [
-        'Authorization: Basic ' . base64_encode($clientId . ':' . $clientSecret),
-        'Content-Type: application/x-www-form-urlencoded'
-    ];
-    $body = 'grant_type=client_credentials';
+require '_helpers.php';
 
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-    $response = curl_exec($ch);
-    curl_close($ch);
+$activePl   = getActivePlaylist();
+$playlists  = loadPlaylists();
+$plId       = $activePl['id'] ?? 'principal';
+$plParam    = '?pl=' . urlencode($plId);
 
-    $result = json_decode($response, true);
-    return $result['access_token'];
-}
-
-// Função para atualizar a ordem das faixas na playlist do Spotify
-function updatePlaylistOrder($accessToken, $playlistId, $trackUris) {
-    $url = "https://api.spotify.com/v1/playlists/$playlistId/tracks";
-    $headers = [
-        'Authorization: Bearer ' . $accessToken,
-        'Content-Type: application/json'
-    ];
-    $body = json_encode([
-        'uris' => $trackUris
-    ]);
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_PUT, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-    $response = curl_exec($ch);
-    curl_close($ch);
-
-    return json_decode($response, true);
-}
-
-// Lê o conteúdo do arquivo JSON
-$jsonFile = 'songs.json';
-$jsonData = file_get_contents($jsonFile);
-$songs = json_decode($jsonData, true);
-
-// Função para formatar URL para Cifra Club
-function formatCifraUrl($url) {
-    if (!empty($url) && !preg_match('/^https?:\/\/(www\.)?cifraclub\.com\.br/', $url)) {
-        return 'https://www.cifraclub.com.br/' . $url;
-    }
-    return $url;
-}
-
-// Função para ordenar a lista
-function sortSongs($songs, $column, $order) {
-    usort($songs, function($a, $b) use ($column, $order) {
-        if ($column === 'index') {
-            $valA = intval($a[$column]);
-            $valB = intval($b[$column]);
-            return ($order === 'asc') ? $valA - $valB : $valB - $valA;
-        } else {
-            $valA = isset($a[$column]) ? $a[$column] : '';
-            $valB = isset($b[$column]) ? $b[$column] : '';
-            if ($order === 'asc') {
-                return strcmp(strtoupper($valA), strtoupper($valB));
-            } else {
-                return strcmp(strtoupper($valB), strtoupper($valA));
-            }
-        }
-    });
-    return $songs;
-}
-
-// Ordena a lista com base nos parâmetros da URL
-$sortColumn = isset($_GET['sort']) ? $_GET['sort'] : 'index';
-$sortOrder = isset($_GET['order']) ? $_GET['order'] : 'asc';
-$songs = sortSongs($songs, $sortColumn, $sortOrder);
-
-// Salva a nova ordem das músicas no arquivo JSON se a requisição for POST
+// Handle drag-and-drop reorder POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['order'])) {
-    $newOrder = json_decode($_POST['order'], true);
+    $songs      = loadSongs($activePl);
+    $newOrder   = json_decode($_POST['order'], true);
     if (is_array($newOrder)) {
-        $sortedSongs = array();
-        foreach ($newOrder as $index) {
-            if (isset($songs[$index])) {
-                $sortedSongs[] = $songs[$index];
-            }
+        $sorted = [];
+        foreach ($newOrder as $idx) {
+            if (isset($songs[(int)$idx])) $sorted[] = $songs[(int)$idx];
         }
-        writeJson($jsonFile, $sortedSongs);
-        $songs = $sortedSongs;
-
-        // Atualiza a ordem no Spotify
-        $playlistId = '4pcomesNQA6DPXj1HFpOjf'; // ID da playlist
-        $accessToken = getAccessToken();
-        $trackUris = array_map(function($song) {
-            return $song['uri']; // Supondo que cada música tem um campo 'uri' com o URI da faixa no Spotify
-        }, $sortedSongs);
-        updatePlaylistOrder($accessToken, $playlistId, $trackUris);
+        saveSongs($activePl, $sorted);
     }
+    exit;
 }
 
-// Função para escrever no JSON
-function writeJson($file, $data) {
-    file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT));
-}
+$songs     = loadSongs($activePl);
+$sortCol   = isset($_GET['sort']) ? $_GET['sort'] : '';
+$sortOrder = isset($_GET['order']) ? $_GET['order'] : 'asc';
+if ($sortCol) $songs = sortSongs($songs, $sortCol, $sortOrder);
+
+$totalSongs   = count($songs);
+$artistCount  = count(array_unique(array_column($songs, 'artist')));
+$withCifra    = count(array_filter($songs, fn($s) => !empty($s['cifra_url']) && $s['cifra_url'] !== 'N/A'));
+
+pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
 ?>
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+<style>
+  .jqui-drag { cursor: grab; }
+  .jqui-drag:active { cursor: grabbing; }
+  .ui-sortable-helper { background: var(--bg3) !important; box-shadow: 0 8px 32px rgba(0,0,0,0.5); border-radius: 4px; opacity: 0.95; }
+  .ui-sortable-placeholder { visibility: visible !important; background: var(--accent-dim) !important; border: 1px dashed var(--accent-glow) !important; }
+  .saving-indicator { font-family: 'DM Mono', monospace; font-size: 0.65rem; color: var(--accent); letter-spacing: 0.08em; opacity: 0; transition: opacity 0.3s; }
+  .saving-indicator.show { opacity: 1; }
+</style>
 
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Marcvs Marcal - Lista de Músicas</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
-    <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #e8f5e9;
-            margin: 0;
-            padding: 0;
-        }
-        header {
-            background: #4caf50;
-            color: #fff;
-            padding: 20px 0;
-            text-align: center;
-        }
-        .container {
-            width: 80%;
-            margin: auto;
-            overflow: hidden;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            background: #fff;
-            border-radius: 5px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
-        th, td {
-            padding: 15px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-            color: #111;
-        }
-        th {
-            background-color: #388e3c;
-            color: white;
-            cursor: pointer;
-            position: sticky;
-            top: 0;
-            z-index: 1;
-        }
-        th:hover {
-            background-color: #4caf50;
-        }
-        a {
-            color: white;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        .button {
-            padding: 10px 20px;
-            color: white;
-            background-color: #4caf50;
-            border: none;
-            border-radius: 5px;
-            text-decoration: none;
-            display: inline-block;
-            margin: 5px;
-        }
-        .button:hover {
-            background-color: #388e3c;
-        }
-        .delete-button {
-            color: #f44336;
-            background-color: transparent;
-            border: none;
-            cursor: pointer;
-        }
-        .delete-button:hover {
-            text-decoration: underline;
-        }
-        tbody tr:nth-child(even) {
-            background-color: #f2f2f2;
-        }
-        tbody tr:hover {
-            background-color: #d9fbe1;
-        }
-        .sticky-header th {
-            position: sticky;
-            top: 0;
-            background: #4caf50;
-            color: white;
-            z-index: 2;
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Marcvs Marcal - Lista de Músicas</h1>
-    </header>
+<?php renderSidebar('index'); ?>
 
-    <div class="container">
-        <a href="index.php" class="button">Home</a>    
-        <a href="add.php" class="button">Adicionar Música</a>
-        <a href="import.php" class="button">Importar Músicas</a>
-        <a href="print_songs.php" class="button">Imprimir</a>
-        <a href="song_list.php" class="button">Lista de Músicas</a>
-        
+<div class="main">
+  <div class="topbar">
+    <div>
+      <div class="topbar-title"><?= htmlspecialchars($activePl['name'] ?? 'SetList') ?></div>
+      <div class="topbar-sub">
+        <?= $totalSongs ?> músicas
+        <?php if (!empty($activePl['is_default'])): ?>
+          &nbsp;·&nbsp; <span style="color:var(--accent)">✦ lista padrão</span>
+        <?php endif; ?>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <span class="saving-indicator" id="savingInd">Salvando…</span>
+      <a href="add.php<?= $plParam ?>" class="btn btn-primary">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Adicionar
+      </a>
+    </div>
+  </div>
 
-        <table id="songsTable">
-            <thead>
-                <tr>
-                    <th>
-                        <a href="?sort=index&order=<?php echo $sortColumn === 'index' && $sortOrder === 'desc' ? 'asc' : 'asc'; ?>">#</a>
-                    </th>
-                    <th>
-                        <a href="?sort=title&order=<?php echo $sortColumn === 'title' && $sortOrder === 'desc' ? 'asc' : 'asc'; ?>">Título</a>
-                    </th>
-                    <th>
-                        <a href="?sort=artist&order=<?php echo $sortColumn === 'artist' && $sortOrder === 'desc' ? 'asc' : 'asc'; ?>">Artista</a>
-                    </th>
-                    <th>Ações</th>
-                </tr>
-            </thead>
-            <tbody id="sortable">
-                <?php foreach ($songs as $index => $song): ?>
-                <tr data-index="<?php echo htmlspecialchars($index); ?>">
-                    <td><?php echo str_pad($index + 1, 2, '0', STR_PAD_LEFT); ?></td>
-                    <td><?php echo htmlspecialchars($song['title']); ?></td>
-                    <td><?php echo htmlspecialchars($song['artist']); ?></td>
-                    <td>
-                        <a href="edit.php?index=<?php echo urlencode($index); ?>" class="button">Editar</a>
-                        <form action="delete.php" method="POST" style="display:inline;">
-                            <input type="hidden" name="index" value="<?php echo htmlspecialchars($index); ?>">
-                            <button type="submit" class="delete-button"><i class="fas fa-trash"></i> Excluir</button>
-                        </form>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+  <div class="content fade-up">
+    <!-- Stats -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-num"><?= str_pad($totalSongs, 2, '0', STR_PAD_LEFT) ?></div>
+        <div class="stat-label">Músicas</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num"><?= str_pad($artistCount, 2, '0', STR_PAD_LEFT) ?></div>
+        <div class="stat-label">Artistas</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num"><?= str_pad($withCifra, 2, '0', STR_PAD_LEFT) ?></div>
+        <div class="stat-label">Com cifra</div>
+      </div>
     </div>
 
-    <!-- jQuery e jQuery UI -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
-    <script>
-        $(document).ready(function() {
-            // Tornar a tabela sortable
-            $("#sortable").sortable({
-                update: function(event, ui) {
-                    var sortedIDs = $("#sortable").sortable("toArray", { attribute: 'data-index' });
-                    $.post("index.php", { order: JSON.stringify(sortedIDs) });
-                }
-            });
+    <!-- Search + Sort -->
+    <div class="search-row">
+      <div class="search-wrap">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="Buscar músicas ou artistas…">
+      </div>
+      <a href="<?= "index.php{$plParam}&sort=title&order=" . ($sortCol==='title'&&$sortOrder==='asc'?'desc':'asc') ?>" class="btn btn-outline">
+        A→Z Título
+      </a>
+      <a href="<?= "index.php{$plParam}&sort=artist&order=" . ($sortCol==='artist'&&$sortOrder==='asc'?'desc':'asc') ?>" class="btn btn-outline">
+        A→Z Artista
+      </a>
+    </div>
 
-            $("#sortable").disableSelection();
+    <!-- Table -->
+    <div class="table-wrap">
+      <table id="songsTable">
+        <thead>
+          <tr>
+            <th style="width:40px"></th>
+            <th class="td-num">#</th>
+            <th>Título</th>
+            <th>Artista</th>
+            <th>Cifra</th>
+            <th class="td-actions">Ações</th>
+          </tr>
+        </thead>
+        <tbody id="sortable">
+          <?php foreach ($songs as $index => $song): ?>
+          <?php $cifraUrl = formatCifraUrl($song['cifra_url'] ?? ''); ?>
+          <tr data-index="<?= $index ?>" class="jqui-drag song-row">
+            <td style="width:40px;padding-right:0">
+              <span class="drag-handle" title="Arrastar para reordenar">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+              </span>
+            </td>
+            <td class="td-num"><?= str_pad($index + 1, 2, '0', STR_PAD_LEFT) ?></td>
+            <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
+            <td class="td-artist"><?= htmlspecialchars($song['artist']) ?></td>
+            <td>
+              <?php if ($cifraUrl): ?>
+                <a href="<?= htmlspecialchars($cifraUrl) ?>" target="_blank" class="badge badge-green" style="text-decoration:none">ver cifra</a>
+              <?php else: ?>
+                <span class="badge badge-gray">—</span>
+              <?php endif; ?>
+            </td>
+            <td class="td-actions">
+              <a href="edit.php?index=<?= $index ?><?= str_replace('?', '&', $plParam) ?>" class="btn btn-ghost">Editar</a>
+              <form action="delete.php" method="POST" onsubmit="return confirm('Excluir esta música?')">
+                <input type="hidden" name="index" value="<?= $index ?>">
+                <input type="hidden" name="pl" value="<?= htmlspecialchars($plId) ?>">
+                <button type="submit" class="btn btn-danger">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
+<script>
+$(function() {
+  // Drag-and-drop sort
+  $("#sortable").sortable({
+    handle: '.drag-handle',
+    placeholder: 'ui-sortable-placeholder',
+    update: function() {
+      var ids = $("#sortable tr").map(function() { return $(this).data('index'); }).get();
+      $('#savingInd').addClass('show');
+      $.post("index.php<?= $plParam ?>", { order: JSON.stringify(ids) }, function() {
+        $('#savingInd').text('Salvo ✓');
+        setTimeout(function() { $('#savingInd').removeClass('show'); $('#savingInd').text('Salvando…'); }, 1500);
+        // Re-number rows
+        $('#sortable tr').each(function(i) {
+          $(this).find('.td-num').text(String(i+1).padStart(2,'0'));
         });
-    </script>
-</body>
-</html>
+      });
+    }
+  });
+
+  // Live search
+  $('#searchInput').on('input', function() {
+    var q = $(this).val().toLowerCase();
+    $('.song-row').each(function() {
+      var title  = $(this).find('.td-title').text().toLowerCase();
+      var artist = $(this).find('.td-artist').text().toLowerCase();
+      $(this).toggle(title.includes(q) || artist.includes(q));
+    });
+  });
+});
+</script>
+</body></html>
