@@ -52,7 +52,7 @@ function fetchSpotifyTracks($token, $playlistId) {
             $t = $item['track'] ?? null;
             if (!$t) continue;
             $songs[] = [
-                'title'     => $t['name'],
+                'title'     => cleanTitle($t['name']),
                 'artist'    => $t['artists'][0]['name'] ?? '',
                 'cifra_url' => 'N/A'
             ];
