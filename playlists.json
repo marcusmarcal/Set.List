@@ -1,14 +1,20 @@
 [
     {
-        "id": "rock",
-        "name": "Pop-Rock",
-        "spotify_id": "0PKRnI7wdeI7ASWmzvsKeA",
-        "is_default": true
-    },
-    {
         "id": "brasil",
         "name": "Brasil",
         "spotify_id": "4pcomesNQA6DPXj1HFpOjf",
+        "is_default": true
+    },
+    {
+        "id": "marcus",
+        "name": "Marcus",
+        "spotify_id": "rtrtre",
+        "is_default": false
+    },
+    {
+        "id": "rock",
+        "name": "Pop-Rock",
+        "spotify_id": "0PKRnI7wdeI7ASWmzvsKeA",
         "is_default": false
     }
 ]

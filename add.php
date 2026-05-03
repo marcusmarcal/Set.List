@@ -7,16 +7,18 @@ $plParam  = '?pl=' . urlencode($plId);
 $error    = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $title    = trim($_POST['title'] ?? '');
-    $artist   = trim($_POST['artist'] ?? '');
-    $cifraUrl = trim($_POST['cifra_url'] ?? '');
+    $title       = trim($_POST['title']        ?? '');
+    $artist      = trim($_POST['artist']       ?? '');
+    $cifraUrl    = trim($_POST['cifra_url']    ?? '');
+    $cifraSource = trim($_POST['cifra_source'] ?? 'cifraclub');
 
     if ($title && $artist) {
         $songs = loadSongs($activePl);
         $songs[] = [
-            'title'     => $title,
-            'artist'    => $artist,
-            'cifra_url' => $cifraUrl ?: 'N/A'
+            'title'        => $title,
+            'artist'       => $artist,
+            'cifra_url'    => $cifraUrl ?: 'N/A',
+            'cifra_source' => $cifraSource,
         ];
         saveSongs($activePl, $songs);
         header('Location: index.php' . $plParam);
@@ -29,49 +31,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 pageHead('Adicionar Música');
 renderSidebar('add');
 ?>
-
+<div class="sidebar-backdrop" id="backdrop"></div>
 <div class="main">
   <div class="topbar">
-    <div>
-      <div class="topbar-title">Adicionar Música</div>
-      <div class="topbar-sub"><?= htmlspecialchars($activePl['name'] ?? '') ?></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="hamburger" id="menuBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div>
+        <div class="topbar-title">Adicionar Música</div>
+        <div class="topbar-sub"><?= htmlspecialchars($activePl['name'] ?? '') ?></div>
+      </div>
     </div>
     <a href="index.php<?= $plParam ?>" class="btn btn-outline">← Voltar</a>
   </div>
-
   <div class="content fade-up">
     <div class="form-card">
       <?php if ($error): ?>
-        <div class="alert alert-error">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <?= htmlspecialchars($error) ?>
-        </div>
+        <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
       <?php endif; ?>
-
       <form action="" method="POST">
         <div class="form-group">
-          <label class="form-label" for="title">Título</label>
-          <input class="form-input" type="text" id="title" name="title"
-                 placeholder="Ex: Resposta" value="<?= htmlspecialchars($_POST['title'] ?? '') ?>" required autofocus>
+          <label class="form-label">Título</label>
+          <input class="form-input" type="text" name="title" placeholder="Ex: Resposta"
+                 value="<?= htmlspecialchars($_POST['title'] ?? '') ?>" required autofocus>
         </div>
-
         <div class="form-group">
-          <label class="form-label" for="artist">Artista</label>
-          <input class="form-input" type="text" id="artist" name="artist"
-                 placeholder="Ex: Skank" value="<?= htmlspecialchars($_POST['artist'] ?? '') ?>" required>
+          <label class="form-label">Artista</label>
+          <input class="form-input" type="text" name="artist" placeholder="Ex: Skank"
+                 value="<?= htmlspecialchars($_POST['artist'] ?? '') ?>" required>
         </div>
-
-        <div class="form-group">
-          <label class="form-label" for="cifra_url">URL da Cifra <span style="color:var(--text3)">(opcional)</span></label>
-          <input class="form-input" type="text" id="cifra_url" name="cifra_url"
-                 placeholder="skank/resposta  ou  URL completa"
-                 value="<?= htmlspecialchars($_POST['cifra_url'] ?? '') ?>">
-          <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
-            Pode ser o caminho relativo no Cifra Club ou a URL completa.
-          </div>
-        </div>
-
-        <div style="display:flex;gap:10px;margin-top:8px">
+        <?php renderCifraField($_POST['cifra_url'] ?? '', $_POST['cifra_source'] ?? 'cifraclub'); ?>
+        <div style="display:flex;gap:10px;margin-top:4px">
           <button type="submit" class="btn btn-primary">Adicionar Música</button>
           <a href="index.php<?= $plParam ?>" class="btn btn-outline">Cancelar</a>
         </div>
@@ -79,5 +70,14 @@ renderSidebar('add');
     </div>
   </div>
 </div>
-
+<script>
+document.getElementById('menuBtn').onclick = function() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('backdrop').classList.toggle('open');
+};
+document.getElementById('backdrop').onclick = function() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('backdrop').classList.remove('open');
+};
+</script>
 </body></html>

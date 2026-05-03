@@ -68,27 +68,61 @@ function sortSongs($songs, $column = 'index', $order = 'asc') {
     return $songs;
 }
 
-/**
- * Remove Spotify suffix junk from titles:
- * - (Live), (Remastered 2009), [Ao Vivo], (2009 Mix), etc.
- * - " - Live", " - Remastered", " - 2009 Remaster", etc.
- * Preserves: "Tanto (I Want You)", "A-Ha", normal parentheses with content.
- */
 function cleanTitle($title) {
     $keywords = 'live|ao vivo|remaster(?:ed)?(?:\s+\d{4})?|\d{4}[\w\s\-]*mix'
               . '|bonus track|explicit|radio edit|single version|album version'
               . '|deluxe|acoustic|demo|instrumental|extended|intro|outro';
-    // Remove: (…) or […] starting with a keyword
     $title = preg_replace('/\s*[\(\[]\s*(?:' . $keywords . ')[^\)\]]*[\)\]]/iu', '', $title);
-    // Remove: " - keyword…" to end of string
     $title = preg_replace('/\s+-\s+(?:' . $keywords . ').*/iu', '', $title);
     return trim($title);
 }
 
-function formatCifraUrl($url) {
+/**
+ * Resolve cifra URL from source + path.
+ * source: 'cifraclub' | 'ultimate_guitar' | 'other'
+ * Returns full URL or null.
+ */
+function formatCifraUrl($url, $source = null) {
     if (empty($url) || $url === 'N/A') return null;
+    // Already a full URL
     if (preg_match('/^https?:\/\//', $url)) return $url;
+    // Relative path — use source to build
+    if ($source === 'ultimate_guitar') {
+        return 'https://tabs.ultimate-guitar.com/' . ltrim($url, '/');
+    }
+    // Default: CifraClub
     return 'https://www.cifraclub.com.br/' . ltrim($url, '/');
+}
+
+/**
+ * Detect cifra source from a stored URL.
+ */
+function detectCifraSource($url) {
+    if (empty($url) || $url === 'N/A') return 'none';
+    if (strpos($url, 'ultimate-guitar.com') !== false) return 'ultimate_guitar';
+    if (strpos($url, 'cifraclub.com.br') !== false || !preg_match('/^https?:\/\//', $url)) return 'cifraclub';
+    return 'other';
+}
+
+/**
+ * Build the full cifra URL for display, given stored song data.
+ */
+function cifraDisplayUrl($song) {
+    $url    = $song['cifra_url']    ?? '';
+    $source = $song['cifra_source'] ?? detectCifraSource($url);
+    return formatCifraUrl($url, $source);
+}
+
+/**
+ * Label for cifra source badge.
+ */
+function cifraSourceLabel($song) {
+    $source = $song['cifra_source'] ?? detectCifraSource($song['cifra_url'] ?? '');
+    return match($source) {
+        'ultimate_guitar' => 'UG',
+        'cifraclub'       => 'CC',
+        default           => '↗',
+    };
 }
 
 // ── SIDEBAR ──────────────────────────────────────────────────────
@@ -158,4 +192,69 @@ function pageHead($title = 'SetList') {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="style.css">
 </head><body>';
+}
+
+/** Shared cifra field HTML for add/edit forms */
+function renderCifraField($cifraUrl = '', $cifraSource = 'cifraclub') {
+    if ($cifraUrl === 'N/A') $cifraUrl = '';
+    $isCifraclub = ($cifraSource === 'cifraclub' || $cifraSource === 'none' || !$cifraSource);
+    $isUG        = ($cifraSource === 'ultimate_guitar');
+    ?>
+    <div class="form-group">
+      <label class="form-label">Fonte da Cifra</label>
+      <div style="display:flex;gap:6px;margin-bottom:8px" id="cifraSourceBtns">
+        <button type="button" class="src-btn <?= $isCifraclub ? 'active' : '' ?>"
+                onclick="setCifraSource('cifraclub')" data-src="cifraclub">
+          Cifra Club
+        </button>
+        <button type="button" class="src-btn <?= $isUG ? 'active' : '' ?>"
+                onclick="setCifraSource('ultimate_guitar')" data-src="ultimate_guitar">
+          Ultimate Guitar
+        </button>
+        <button type="button" class="src-btn <?= (!$isCifraclub && !$isUG) ? 'active' : '' ?>"
+                onclick="setCifraSource('other')" data-src="other">
+          Outro / URL
+        </button>
+      </div>
+      <input type="hidden" name="cifra_source" id="cifraSourceInput"
+             value="<?= htmlspecialchars($cifraSource ?: 'cifraclub') ?>">
+    </div>
+    <div class="form-group" id="cifraUrlGroup">
+      <label class="form-label" id="cifraUrlLabel">URL / Caminho da Cifra <span style="color:var(--text3)">(opcional)</span></label>
+      <input class="form-input" type="text" id="cifraUrlInput" name="cifra_url"
+             placeholder="" value="<?= htmlspecialchars($cifraUrl) ?>">
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:5px" id="cifraUrlHint"></div>
+    </div>
+    <style>
+      .src-btn {
+        padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border2);
+        background: transparent; color: var(--text2); font-family: 'DM Sans', sans-serif;
+        font-size: 0.78rem; cursor: pointer; transition: all 0.15s;
+      }
+      .src-btn:hover { border-color: var(--accent); color: var(--accent); }
+      .src-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+    </style>
+    <script>
+    var cifraHints = {
+      cifraclub:       'Caminho relativo: <strong>skank/resposta</strong>  ou URL completa do Cifra Club.',
+      ultimate_guitar: 'Cole a URL completa do Ultimate Guitar:<br><code style="font-size:0.68rem;color:var(--text3)">https://tabs.ultimate-guitar.com/…</code>',
+      other:           'Cole qualquer URL de cifra ou tablatura.'
+    };
+    var cifraPlaceholders = {
+      cifraclub:       'skank/resposta  ou  URL completa',
+      ultimate_guitar: 'https://tabs.ultimate-guitar.com/...',
+      other:           'https://...'
+    };
+    function setCifraSource(src) {
+      document.getElementById('cifraSourceInput').value = src;
+      document.getElementById('cifraUrlInput').placeholder = cifraPlaceholders[src] || '';
+      document.getElementById('cifraUrlHint').innerHTML  = cifraHints[src] || '';
+      document.querySelectorAll('.src-btn').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.src === src);
+      });
+    }
+    // Init on load
+    setCifraSource(document.getElementById('cifraSourceInput').value || 'cifraclub');
+    </script>
+    <?php
 }
