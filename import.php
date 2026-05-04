@@ -1,5 +1,6 @@
 <?php
 require '_helpers.php';
+checkAuth();
 
 $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
@@ -39,30 +40,25 @@ function fetchSpotifyTracks($token, $playlistId) {
     $url   = "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=100";
     while ($url) {
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_HTTPHEADER    => ["Authorization: Bearer $token"],
-            CURLOPT_RETURNTRANSFER => true
-        ]);
+        curl_setopt_array($ch, [CURLOPT_HTTPHEADER => ["Authorization: Bearer $token"], CURLOPT_RETURNTRANSFER => true]);
         $data = json_decode(curl_exec($ch), true);
         curl_close($ch);
         if (empty($data['items'])) break;
         foreach ($data['items'] as $item) {
             $t = $item['track'] ?? null;
             if (!$t || empty($t['name'])) continue;
-            $songs[] = [
-                'title'        => cleanTitle($t['name']),
-                'artist'       => $t['artists'][0]['name'] ?? '',
-                'cifra_url'    => 'N/A',
-                'cifra_source' => 'cifraclub',
-                'duration_ms'  => (int)($t['duration_ms'] ?? 0),
-            ];
+            $songs[] = ['title' => cleanTitle($t['name']), 'artist' => $t['artists'][0]['name'] ?? '',
+                        'cifra_url' => 'N/A', 'cifra_source' => 'cifraclub',
+                        'duration_ms' => (int)($t['duration_ms'] ?? 0)];
         }
         $url = $data['next'] ?? null;
     }
     return $songs;
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+// Write action — requires auth
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['_action'])) {
+    requireAuthOrDie('index.php');
     $targetPlId = $_POST['target_pl'] ?? $plId;
     $targetPl   = null;
     foreach ($playlists as $pl) { if ($pl['id'] === $targetPlId) { $targetPl = $pl; break; } }
@@ -81,8 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $existing     = loadSongs($targetPl);
                 $existingKeys = array_map(fn($s) => strtolower($s['title'].'|'.$s['artist']), $existing);
                 foreach ($songs as $s) {
-                    if (!in_array(strtolower($s['title'].'|'.$s['artist']), $existingKeys))
-                        $existing[] = $s;
+                    if (!in_array(strtolower($s['title'].'|'.$s['artist']), $existingKeys)) $existing[] = $s;
                 }
                 saveSongs($targetPl, $existing);
                 $success = count($existing) . ' músicas no total após merge.';
@@ -95,6 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $hasCredentials = !empty($clientId) && !empty($clientSecret);
+$authed = isAuthed();
 
 pageHead('Importar Spotify');
 renderSidebar('import');
@@ -113,70 +109,55 @@ renderSidebar('import');
     </div>
     <a href="index.php<?= $plParam ?>" class="btn btn-outline">← Voltar</a>
   </div>
-
   <div class="content fade-up">
-    <?php if ($error): ?>
-      <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
+    <?php if ($error):   ?><div class="alert alert-error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
     <?php if ($success): ?>
       <div class="alert alert-success">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-        <?= htmlspecialchars($success) ?>
-        &nbsp;— <a href="index.php<?= $plParam ?>" style="color:var(--accent)">Ver músicas →</a>
+        <?= htmlspecialchars($success) ?> — <a href="index.php<?= $plParam ?>" style="color:var(--accent)">Ver músicas →</a>
       </div>
     <?php endif; ?>
 
     <?php if (!$hasCredentials): ?>
-    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);padding:24px 28px;max-width:540px">
-      <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f0b429" stroke-width="1.8" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <div>
-          <div style="font-weight:600;margin-bottom:4px">Credenciais do Spotify não configuradas</div>
-          <div style="font-size:0.8rem;color:var(--text2);line-height:1.6">
-            Crie um ficheiro <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:4px">.env</code> na raiz do projeto:
-          </div>
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);padding:22px 26px;max-width:520px">
+      <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:14px">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f0b429" stroke-width="1.8" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div style="font-size:.8rem;color:var(--text2);line-height:1.6">
+          <strong style="color:var(--text)">Credenciais do Spotify não configuradas</strong><br>
+          Crie o ficheiro <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.env</code> na raiz:
         </div>
       </div>
-      <pre style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:14px;font-family:'DM Mono',monospace;font-size:0.72rem;color:var(--text2);line-height:1.8;overflow-x:auto">CLIENT_ID=seu_client_id_aqui
-CLIENT_SECRET=seu_client_secret_aqui</pre>
-      <div style="font-size:0.72rem;color:var(--text3);margin-top:10px">
+      <pre style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:12px;font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text2);line-height:1.8">CLIENT_ID=seu_client_id
+CLIENT_SECRET=seu_client_secret</pre>
+      <div style="font-size:.7rem;color:var(--text3);margin-top:10px">
         Crie um app em <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:var(--accent)">developer.spotify.com/dashboard</a>
       </div>
     </div>
     <?php else: ?>
-
     <div class="form-card">
-      <form method="POST">
+      <form id="importForm" method="POST">
         <div class="form-group">
           <label class="form-label">Importar para qual lista</label>
           <select class="form-input" name="target_pl">
             <?php foreach ($playlists as $pl): ?>
-              <option value="<?= htmlspecialchars($pl['id']) ?>" <?= $pl['id'] === $plId ? 'selected' : '' ?>>
-                <?= htmlspecialchars($pl['name']) ?><?= !empty($pl['is_default']) ? ' (padrão)' : '' ?>
-                — <?= htmlspecialchars($pl['spotify_id']) ?>
+              <option value="<?= htmlspecialchars($pl['id']) ?>" <?= $pl['id']===$plId?'selected':'' ?>>
+                <?= htmlspecialchars($pl['name']) ?><?= !empty($pl['is_default'])?' (padrão)':'' ?> — <?= htmlspecialchars($pl['spotify_id']) ?>
               </option>
             <?php endforeach; ?>
           </select>
-          <div style="font-size:0.7rem;color:var(--text3);margin-top:5px">
-            Para alterar o ID de uma playlist, vá a <a href="playlists.php" style="color:var(--accent)">Listas Spotify</a>.
-          </div>
         </div>
         <div class="form-group">
           <label class="form-label">Modo de importação</label>
           <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
             <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
               <input type="radio" name="import_mode" value="replace" checked style="margin-top:3px;accent-color:var(--accent)">
-              <div>
-                <div style="font-size:0.84rem;font-weight:500">Substituir lista</div>
-                <div style="font-size:0.72rem;color:var(--text3)">Apaga a lista atual e importa tudo do Spotify (inclui duração)</div>
-              </div>
+              <div><div style="font-size:.84rem;font-weight:500">Substituir lista</div>
+              <div style="font-size:.72rem;color:var(--text3)">Apaga a lista atual e importa tudo do Spotify</div></div>
             </label>
             <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
               <input type="radio" name="import_mode" value="merge" style="margin-top:3px;accent-color:var(--accent)">
-              <div>
-                <div style="font-size:0.84rem;font-weight:500">Mesclar (merge)</div>
-                <div style="font-size:0.72rem;color:var(--text3)">Adiciona músicas novas sem apagar as existentes</div>
-              </div>
+              <div><div style="font-size:.84rem;font-weight:500">Mesclar (merge)</div>
+              <div style="font-size:.72rem;color:var(--text3)">Adiciona músicas novas sem apagar as existentes</div></div>
             </label>
           </div>
         </div>
@@ -189,7 +170,17 @@ CLIENT_SECRET=seu_client_secret_aqui</pre>
     <?php endif; ?>
   </div>
 </div>
+
+<?php renderLockModal(); ?>
+
 <script>
+<?php if ($hasCredentials): ?>
+document.getElementById('importForm').addEventListener('submit', function(e) {
+  if (!_isLocked || _isAuthed) return;
+  e.preventDefault();
+  openLockModal(function() { _isAuthed = true; document.getElementById('importForm').submit(); });
+});
+<?php endif; ?>
 document.getElementById('menuBtn').onclick = function() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('backdrop').classList.toggle('open');

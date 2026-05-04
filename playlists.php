@@ -3,7 +3,7 @@ require '_helpers.php';
 
 // ── PASSWORD CHECK ────────────────────────────────────────────────
 // Load .env manually (no Composer needed for this simple parse)
-function loadEnvValue($key) {
+/*function loadEnvValue($key) {
     $envFile = __DIR__ . '/.env';
     if (!file_exists($envFile)) return null;
     foreach (file($envFile) as $line) {
@@ -14,13 +14,13 @@ function loadEnvValue($key) {
     }
     return null;
 }
-
+*/
 $adminPassword = loadEnvValue('ADMIN_PASSWORD') ?: '';
 $isLocked      = $adminPassword !== '';
 $isAuthed      = false;
 $authError     = '';
 
-session_start();
+//session_start();
 
 if ($isLocked) {
     // Login POST

@@ -1,13 +1,17 @@
 <?php
 require '_helpers.php';
 
-$activePl   = getActivePlaylist();
-$playlists  = loadPlaylists();
-$plId       = $activePl['id'] ?? 'principal';
-$plParam    = '?pl=' . urlencode($plId);
+// Handle login POST before anything else
+checkAuth();
 
-// ── AJAX: reorder ──
+$activePl  = getActivePlaylist();
+$playlists = loadPlaylists();
+$plId      = $activePl['id'] ?? 'principal';
+$plParam   = '?pl=' . urlencode($plId);
+
+// ── AJAX: reorder (write — requires auth) ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['order'])) {
+    requireAuthOrDie('index.php');
     $songs    = loadSongs($activePl);
     $newOrder = json_decode($_POST['order'], true);
     if (is_array($newOrder)) {
@@ -20,15 +24,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['order'])) {
     exit;
 }
 
-// ── AJAX: inline edit ──
+// ── AJAX: inline edit (write — requires auth) ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_edit'])) {
+    requireAuthOrDie('index.php');
     header('Content-Type: application/json');
     $songs       = loadSongs($activePl);
-    $index       = (int)($_POST['index']        ?? -1);
-    $title       = trim($_POST['title']         ?? '');
-    $artist      = trim($_POST['artist']        ?? '');
-    $cifraUrl    = trim($_POST['cifra_url']     ?? '');
-    $cifraSource = trim($_POST['cifra_source']  ?? 'cifraclub');
+    $index       = (int)($_POST['index']       ?? -1);
+    $title       = trim($_POST['title']        ?? '');
+    $artist      = trim($_POST['artist']       ?? '');
+    $cifraUrl    = trim($_POST['cifra_url']    ?? '');
+    $cifraSource = trim($_POST['cifra_source'] ?? 'cifraclub');
     if ($index >= 0 && $index < count($songs) && $title && $artist) {
         $songs[$index]['title']        = $title;
         $songs[$index]['artist']       = $artist;
@@ -55,23 +60,24 @@ $totalSongs  = count($songs);
 $artistCount = count(array_unique(array_column($songs, 'artist')));
 $withCifra   = count(array_filter($songs, fn($s) => !empty($s['cifra_url']) && $s['cifra_url'] !== 'N/A'));
 
-// Duration: sum of duration_ms if available from Spotify import
 $totalMs = array_sum(array_column($songs, 'duration_ms'));
 function fmtDuration($ms) {
     if (!$ms) return null;
-    $s = intdiv($ms, 1000);
-    $h = intdiv($s, 3600); $s -= $h * 3600;
-    $m = intdiv($s, 60);   $s -= $m * 60;
-    return $h ? sprintf('%dh %02dm', $h, $m) : sprintf('%dm %02ds', $m, $s);
+    $s = intdiv($ms, 1000); $h = intdiv($s, 3600); $s -= $h*3600; $m = intdiv($s,60);
+    return $h ? sprintf('%dh %02dm',$h,$m) : sprintf('%dm %02ds',$m,$s);
 }
 $durationStr = fmtDuration($totalMs);
+$authed      = isAuthed();
 
 pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
 ?>
 <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
 <style>
-  .ui-sortable-helper { background:var(--bg3)!important; box-shadow:0 8px 28px rgba(0,0,0,0.5); opacity:.95; }
-  .ui-sortable-placeholder { visibility:visible!important; background:var(--accent-dim)!important; border:1px dashed var(--accent-glow)!important; height:34px!important; }
+  .ui-sortable-helper{background:var(--bg3)!important;box-shadow:0 8px 28px rgba(0,0,0,.5);opacity:.95;}
+  .ui-sortable-placeholder{visibility:visible!important;background:var(--accent-dim)!important;border:1px dashed var(--accent-glow)!important;height:34px!important;}
+  /* lock overlay on table when not authed */
+  .read-only-notice{display:flex;align-items:center;gap:8px;padding:9px 14px;margin-bottom:12px;background:rgba(29,185,84,.07);border:1px solid rgba(29,185,84,.18);border-radius:var(--radius);font-size:.78rem;color:var(--text2);}
+  .read-only-notice svg{color:var(--accent);flex-shrink:0;}
 </style>
 
 <?php renderSidebar('index'); ?>
@@ -80,45 +86,41 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
 <div class="main">
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:10px">
-      <button class="hamburger" id="menuBtn" aria-label="Menu">
+      <button class="hamburger" id="menuBtn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
       <div>
         <div class="topbar-title"><?= htmlspecialchars($activePl['name'] ?? 'SetList') ?></div>
         <div class="topbar-sub">
-          <?= $totalSongs ?> músicas<?php if ($durationStr): ?> · <?= $durationStr ?><?php endif; ?>
+          <?= $totalSongs ?> músicas<?= $durationStr ? ' · '.$durationStr : '' ?>
           <?php if (!empty($activePl['is_default'])): ?> · <span style="color:var(--accent)">✦ padrão</span><?php endif; ?>
         </div>
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="saving-indicator" id="savingInd">Salvo ✓</span>
-      <a href="add.php<?= $plParam ?>" class="btn btn-primary">
+      <!-- Add button — guarded -->
+      <button class="btn btn-primary" id="addBtn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span class="btn-label">Adicionar</span>
-      </a>
+      </button>
     </div>
   </div>
 
   <div class="content fade-up">
+    <?php if (!$authed && isLocked()): ?>
+    <div class="read-only-notice">
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Modo leitura — clica em qualquer acção para autenticar e editar.
+    </div>
+    <?php endif; ?>
+
     <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-num"><?= str_pad($totalSongs, 2, '0', STR_PAD_LEFT) ?></div>
-        <div class="stat-label">Músicas</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-num"><?= str_pad($artistCount, 2, '0', STR_PAD_LEFT) ?></div>
-        <div class="stat-label">Artistas</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-num"><?= str_pad($withCifra, 2, '0', STR_PAD_LEFT) ?></div>
-        <div class="stat-label">Com cifra</div>
-      </div>
+      <div class="stat-card"><div class="stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Músicas</div></div>
+      <div class="stat-card"><div class="stat-num"><?= str_pad($artistCount,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Artistas</div></div>
+      <div class="stat-card"><div class="stat-num"><?= str_pad($withCifra,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Com cifra</div></div>
       <?php if ($durationStr): ?>
-      <div class="stat-card">
-        <div class="stat-num" style="font-size:1.3rem"><?= $durationStr ?></div>
-        <div class="stat-label">Duração</div>
-      </div>
+      <div class="stat-card"><div class="stat-num" style="font-size:1.3rem"><?= $durationStr ?></div><div class="stat-label">Duração</div></div>
       <?php endif; ?>
     </div>
 
@@ -127,12 +129,12 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="search-input" id="searchInput" placeholder="Buscar…">
       </div>
-      <a href="index.php<?= $plParam ?>&sort=title&order=<?= ($sortCol==='title'&&$sortOrder==='asc') ? 'desc' : 'asc' ?>" class="btn btn-outline">A→Z Título</a>
-      <a href="index.php<?= $plParam ?>&sort=artist&order=<?= ($sortCol==='artist'&&$sortOrder==='asc') ? 'desc' : 'asc' ?>" class="btn btn-outline">A→Z Artista</a>
+      <a href="index.php<?= $plParam ?>&sort=title&order=<?= ($sortCol==='title'&&$sortOrder==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Título</a>
+      <a href="index.php<?= $plParam ?>&sort=artist&order=<?= ($sortCol==='artist'&&$sortOrder==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Artista</a>
     </div>
 
     <div class="table-wrap">
-      <table id="songsTable">
+      <table>
         <thead>
           <tr>
             <th style="width:36px"></th>
@@ -144,8 +146,7 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
           </tr>
         </thead>
         <tbody id="sortable">
-          <?php foreach ($songs as $index => $song): ?>
-          <?php
+          <?php foreach ($songs as $index => $song):
             $cifraUrl   = cifraDisplayUrl($song);
             $cifraLabel = cifraSourceLabel($song);
             $cifraRaw   = $song['cifra_url']    ?? '';
@@ -162,13 +163,12 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
                 <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
               </span>
             </td>
-            <td class="td-num"><?= str_pad($index + 1, 2, '0', STR_PAD_LEFT) ?></td>
+            <td class="td-num"><?= str_pad($index+1,2,'0',STR_PAD_LEFT) ?></td>
             <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
             <td class="td-artist"><?= htmlspecialchars($song['artist']) ?></td>
             <td class="td-cifra">
               <?php if ($cifraUrl): ?>
-                <a href="<?= htmlspecialchars($cifraUrl) ?>" target="_blank"
-                   class="badge badge-green cifra-badge" style="text-decoration:none"><?= $cifraLabel ?></a>
+                <a href="<?= htmlspecialchars($cifraUrl) ?>" target="_blank" class="badge badge-green cifra-badge" style="text-decoration:none"><?= $cifraLabel ?></a>
               <?php else: ?>
                 <span class="badge badge-gray cifra-badge">—</span>
               <?php endif; ?>
@@ -179,13 +179,9 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   <span>Editar</span>
                 </button>
-                <form action="delete.php" method="POST" onsubmit="return confirm('Excluir esta música?')" style="display:inline-flex">
-                  <input type="hidden" name="index" value="<?= $index ?>">
-                  <input type="hidden" name="pl" value="<?= htmlspecialchars($plId) ?>">
-                  <button type="submit" class="btn btn-danger" title="Excluir">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                  </button>
-                </form>
+                <button class="btn btn-danger delete-btn" data-index="<?= $index ?>" title="Excluir">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
               </div>
             </td>
           </tr>
@@ -196,7 +192,7 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
   </div>
 </div>
 
-<!-- INLINE EDIT MODAL -->
+<!-- EDIT MODAL -->
 <div class="modal-overlay" id="editModal">
   <div class="modal" style="max-width:500px">
     <div class="modal-title">Editar Música</div>
@@ -209,7 +205,6 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
       <label class="form-label">Artista</label>
       <input class="form-input" type="text" id="editArtist">
     </div>
-    <!-- Cifra source selector -->
     <div class="form-group">
       <label class="form-label">Fonte da Cifra</label>
       <div style="display:flex;gap:6px;margin-bottom:8px">
@@ -220,8 +215,8 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
     </div>
     <div class="form-group">
       <label class="form-label">URL / Caminho <span style="color:var(--text3)">(opcional)</span></label>
-      <input class="form-input" type="text" id="editCifraUrl" placeholder="">
-      <div style="font-size:0.72rem;color:var(--text3);margin-top:5px" id="editCifraHint"></div>
+      <input class="form-input" type="text" id="editCifraUrl">
+      <div style="font-size:.72rem;color:var(--text3);margin-top:5px" id="editCifraHint"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeEditModal()">Cancelar</button>
@@ -230,28 +225,30 @@ pageHead('Músicas · ' . ($activePl['name'] ?? 'SetList'));
   </div>
 </div>
 
+<!-- DELETE hidden form -->
+<form id="deleteForm" action="delete.php" method="POST" style="display:none">
+  <input type="hidden" name="index" id="deleteIndex">
+  <input type="hidden" name="pl" value="<?= htmlspecialchars($plId) ?>">
+</form>
+
+<?php renderLockModal(); ?>
+
 <style>
-.src-btn {
-  padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border2);
-  background: transparent; color: var(--text2); font-family: 'DM Sans', sans-serif;
-  font-size: 0.78rem; cursor: pointer; transition: all 0.15s;
-}
-.src-btn:hover { border-color: var(--accent); color: var(--accent); }
-.src-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.src-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text2);font-family:'DM Sans',sans-serif;font-size:.78rem;cursor:pointer;transition:all .15s;}
+.src-btn:hover{border-color:var(--accent);color:var(--accent);}
+.src-btn.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
 </style>
 
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
 <script>
 var plParam = '<?= addslashes($plParam) ?>';
-var currentEditIndex = -1;
-var currentEditRow   = null;
-var currentCifraSource = 'cifraclub';
+var currentEditIndex = -1, currentEditRow = null, currentCifraSource = 'cifraclub';
 
 var cifraHints = {
-  cifraclub:       'Caminho: <strong>skank/resposta</strong>  ou URL completa do Cifra Club.',
+  cifraclub:       'Caminho: <strong>skank/resposta</strong> ou URL completa do Cifra Club.',
   ultimate_guitar: 'Cole a URL completa do Ultimate Guitar.',
-  other:           'Cole qualquer URL de cifra ou tablatura.'
+  other:           'Cole qualquer URL de cifra.'
 };
 var cifraPlaceholders = {
   cifraclub:       'skank/resposta  ou  URL completa',
@@ -261,32 +258,39 @@ var cifraPlaceholders = {
 
 function setEditCifraSource(src) {
   currentCifraSource = src;
-  document.getElementById('editCifraUrl').placeholder = cifraPlaceholders[src] || '';
-  document.getElementById('editCifraHint').innerHTML  = cifraHints[src] || '';
-  document.querySelectorAll('#editModal .src-btn').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.src === src);
+  $('#editCifraUrl').attr('placeholder', cifraPlaceholders[src] || '');
+  $('#editCifraHint').html(cifraHints[src] || '');
+  $('#editModal .src-btn').each(function() {
+    $(this).toggleClass('active', $(this).data('src') === src);
   });
 }
 
 $(function() {
-  // ── Drag-and-drop reorder ──
+  // ── Drag reorder — guarded ──
   $("#sortable").sortable({
     handle: '.drag-handle',
     placeholder: 'ui-sortable-placeholder',
+    start: function(e, ui) {
+      // If not authed, cancel sort and open lock
+      if (_isLocked && !_isAuthed) {
+        $("#sortable").sortable('cancel');
+        openLockModal(function() { _isAuthed = true; });
+        return false;
+      }
+    },
     update: function() {
-      var ids = $("#sortable tr.song-row").map(function() { return $(this).data('index'); }).get();
+      var ids = $("#sortable tr.song-row").map(function(){ return $(this).data('index'); }).get();
       showSaving('Salvando…');
       $.post("index.php" + plParam, { order: JSON.stringify(ids) }, function() {
-        showSaving('Salvo ✓');
-        setTimeout(hideSaving, 1600);
-        $('#sortable tr.song-row:visible').each(function(i) {
+        showSaving('Salvo ✓'); setTimeout(hideSaving, 1600);
+        $('#sortable tr.song-row:visible').each(function(i){
           $(this).find('.td-num').text(String(i+1).padStart(2,'0'));
         });
       });
     }
   });
 
-  // ── Live search ──
+  // ── Search ──
   $('#searchInput').on('input', function() {
     var q = $(this).val().toLowerCase();
     $('.song-row').each(function() {
@@ -296,23 +300,44 @@ $(function() {
     });
   });
 
-  // ── Open edit modal ──
-  $(document).on('click', '.edit-btn', function() {
-    var row = $(this).closest('tr');
-    currentEditIndex  = parseInt(row.data('index'));
-    currentEditRow    = row;
-    $('#editTitle').val(row.data('title'));
-    $('#editArtist').val(row.data('artist'));
-    var src = row.data('cifra-source') || 'cifraclub';
-    var url = row.data('cifra-url') || '';
-    if (url === 'N/A') url = '';
-    $('#editCifraUrl').val(url);
-    setEditCifraSource(src);
-    $('#editModalSub').text('#' + row.find('.td-num').text());
-    $('#editModal').addClass('open');
-    setTimeout(function(){ $('#editTitle').focus(); }, 80);
+  // ── Add button — navigate after auth ──
+  $('#addBtn').on('click', function() {
+    guardedAction(function() {
+      window.location.href = 'add.php' + plParam;
+    });
   });
 
+  // ── Edit button — guarded ──
+  $(document).on('click', '.edit-btn', function() {
+    var row = $(this).closest('tr');
+    var idx = parseInt(row.data('index'));
+    guardedAction(function() {
+      currentEditIndex = idx;
+      currentEditRow   = row;
+      $('#editTitle').val(row.data('title'));
+      $('#editArtist').val(row.data('artist'));
+      var src = row.data('cifra-source') || 'cifraclub';
+      var url = row.data('cifra-url') || '';
+      if (url === 'N/A') url = '';
+      $('#editCifraUrl').val(url);
+      setEditCifraSource(src);
+      $('#editModalSub').text('#' + row.find('.td-num').text());
+      $('#editModal').addClass('open');
+      setTimeout(function(){ $('#editTitle').focus(); }, 80);
+    });
+  });
+
+  // ── Delete button — guarded ──
+  $(document).on('click', '.delete-btn', function() {
+    var idx = $(this).data('index');
+    guardedAction(function() {
+      if (!confirm('Excluir esta música?')) return;
+      $('#deleteIndex').val(idx);
+      $('#deleteForm').submit();
+    });
+  });
+
+  // ── Edit modal ──
   $('#editSaveBtn').on('click', saveEdit);
   $('#editModal').on('keydown', function(e) {
     if (e.key === 'Enter') saveEdit();
@@ -321,13 +346,8 @@ $(function() {
   $('#editModal').on('click', function(e) { if (e.target === this) closeEditModal(); });
 
   // ── Mobile sidebar ──
-  $('#menuBtn').on('click', function() {
-    $('#sidebar').toggleClass('open');
-    $('#backdrop').toggleClass('open');
-  });
-  $('#backdrop').on('click', function() {
-    $('#sidebar, #backdrop').removeClass('open');
-  });
+  $('#menuBtn').on('click', function() { $('#sidebar').toggleClass('open'); $('#backdrop').toggleClass('open'); });
+  $('#backdrop').on('click', function() { $('#sidebar,#backdrop').removeClass('open'); });
 });
 
 function saveEdit() {
@@ -345,30 +365,23 @@ function saveEdit() {
     if (res.ok) {
       currentEditRow.find('.td-title').text(res.title);
       currentEditRow.find('.td-artist').text(res.artist);
-      currentEditRow.data('title',  res.title);
-      currentEditRow.data('artist', res.artist);
-      currentEditRow.data('cifra-url',    res.cifra_url    || '');
-      currentEditRow.data('cifra-source', res.cifra_source || 'cifraclub');
-      // Update cifra badge
+      currentEditRow.data('title', res.title).data('artist', res.artist)
+        .data('cifra-url', res.cifra_url || '').data('cifra-source', res.cifra_source || 'cifraclub');
       var cell = currentEditRow.find('.td-cifra');
       if (res.cifra_url) {
-        var cls = res.cifra_source === 'none' ? 'badge badge-gray' : 'badge badge-green cifra-badge';
-        cell.html('<a href="'+res.cifra_url+'" target="_blank" class="'+cls+'" style="text-decoration:none">'+res.cifra_label+'</a>');
+        cell.html('<a href="'+res.cifra_url+'" target="_blank" class="badge badge-green cifra-badge" style="text-decoration:none">'+res.cifra_label+'</a>');
       } else {
         cell.html('<span class="badge badge-gray cifra-badge">—</span>');
       }
       currentEditRow.addClass('just-edited');
-      setTimeout(function() { currentEditRow.removeClass('just-edited'); }, 1300);
+      setTimeout(function(){ currentEditRow.removeClass('just-edited'); }, 1300);
       closeEditModal();
     }
   }, 'json');
 }
 
-function closeEditModal() {
-  $('#editModal').removeClass('open');
-  currentEditIndex = -1; currentEditRow = null;
-}
-function showSaving(msg) { $('#savingInd').text(msg).addClass('show'); }
-function hideSaving()    { $('#savingInd').removeClass('show'); }
+function closeEditModal() { $('#editModal').removeClass('open'); currentEditIndex=-1; currentEditRow=null; }
+function showSaving(m) { $('#savingInd').text(m).addClass('show'); }
+function hideSaving()  { $('#savingInd').removeClass('show'); }
 </script>
 </body></html>

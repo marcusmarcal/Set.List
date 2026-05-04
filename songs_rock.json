@@ -294,7 +294,7 @@
         "duration_ms": 288160
     },
     {
-        "title": "The Happiest Days Of Our Lives\/Another Brick In The Wall, Part 2\/Another Brick In The Wall, Part 3",
+        "title": "The Happiest Days Of Our Lives\/Another Brick In The Wall",
         "artist": "Roger Waters",
         "cifra_url": "N\/A",
         "cifra_source": "cifraclub",
@@ -327,5 +327,12 @@
         "cifra_url": "N\/A",
         "cifra_source": "cifraclub",
         "duration_ms": 149173
+    },
+    {
+        "title": "The Happiest Days Of Our Lives\/Another Brick In The Wall, Part 2\/Another Brick In The Wall, Part 3",
+        "artist": "Roger Waters",
+        "cifra_url": "N\/A",
+        "cifra_source": "cifraclub",
+        "duration_ms": 410816
     }
 ]

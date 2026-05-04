@@ -1,25 +1,22 @@
 <?php
 require '_helpers.php';
+checkAuth();
 
 $activePl = getActivePlaylist();
 $plId     = $activePl['id'] ?? 'principal';
 $plParam  = '?pl=' . urlencode($plId);
 $error    = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['_action'])) {
+    requireAuthOrDie('index.php');
     $title       = trim($_POST['title']        ?? '');
     $artist      = trim($_POST['artist']       ?? '');
     $cifraUrl    = trim($_POST['cifra_url']    ?? '');
     $cifraSource = trim($_POST['cifra_source'] ?? 'cifraclub');
-
     if ($title && $artist) {
         $songs = loadSongs($activePl);
-        $songs[] = [
-            'title'        => $title,
-            'artist'       => $artist,
-            'cifra_url'    => $cifraUrl ?: 'N/A',
-            'cifra_source' => $cifraSource,
-        ];
+        $songs[] = ['title' => $title, 'artist' => $artist,
+                    'cifra_url' => $cifraUrl ?: 'N/A', 'cifra_source' => $cifraSource];
         saveSongs($activePl, $songs);
         header('Location: index.php' . $plParam);
         exit;
@@ -28,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// If not authed, show page but form submit will hit lock
 pageHead('Adicionar Música');
 renderSidebar('add');
 ?>
@@ -47,10 +45,8 @@ renderSidebar('add');
   </div>
   <div class="content fade-up">
     <div class="form-card">
-      <?php if ($error): ?>
-        <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
-      <?php endif; ?>
-      <form action="" method="POST">
+      <?php if ($error): ?><div class="alert alert-error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
+      <form id="addForm" method="POST">
         <div class="form-group">
           <label class="form-label">Título</label>
           <input class="form-input" type="text" name="title" placeholder="Ex: Resposta"
@@ -63,14 +59,25 @@ renderSidebar('add');
         </div>
         <?php renderCifraField($_POST['cifra_url'] ?? '', $_POST['cifra_source'] ?? 'cifraclub'); ?>
         <div style="display:flex;gap:10px;margin-top:4px">
-          <button type="submit" class="btn btn-primary">Adicionar Música</button>
+          <button type="submit" class="btn btn-primary" id="submitBtn">Adicionar Música</button>
           <a href="index.php<?= $plParam ?>" class="btn btn-outline">Cancelar</a>
         </div>
       </form>
     </div>
   </div>
 </div>
+
+<?php renderLockModal(); ?>
+
 <script>
+document.getElementById('addForm').addEventListener('submit', function(e) {
+  if (!_isLocked || _isAuthed) return; // let it submit normally
+  e.preventDefault();
+  openLockModal(function() {
+    _isAuthed = true;
+    document.getElementById('addForm').submit();
+  });
+});
 document.getElementById('menuBtn').onclick = function() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('backdrop').classList.toggle('open');
