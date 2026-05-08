@@ -51,6 +51,7 @@ function getActivePl() {
     if ($id) foreach ($pls as $p) if ($p['id'] === $id) return $p;
     foreach ($pls as $p) if (!empty($p['is_default'])) return $p;
     return $pls[0] ?? null;
+<<<<<<< HEAD
 }
 
 function songsFile($pl) {
@@ -231,6 +232,145 @@ if(isset($_GET['spot_debug'])){
     exit;
 }
 
+=======
+}
+
+function songsFile($pl) {
+    $id = preg_replace('/[^a-z0-9_-]/i','', $pl['id']);
+    return __DIR__ . "/songs_{$id}.json";
+}
+function loadSongs($pl) {
+    $f = songsFile($pl);
+    if (!file_exists($f)) {
+        $leg = __DIR__ . '/songs.json';
+        if (!empty($pl['is_default']) && file_exists($leg)) {
+            $d = json_decode(file_get_contents($leg), true) ?: [];
+            file_put_contents($f, json_encode($d, JSON_PRETTY_PRINT));
+            return $d;
+        }
+        return [];
+    }
+    return json_decode(file_get_contents($f), true) ?: [];
+}
+function saveSongs($pl, $d) { file_put_contents(songsFile($pl), json_encode($d, JSON_PRETTY_PRINT)); }
+
+function sortSongs($songs, $col, $ord='asc') {
+    usort($songs, function($a,$b) use($col,$ord) {
+        $cmp = strcmp(strtoupper($a[$col]??''), strtoupper($b[$col]??''));
+        return $ord==='desc' ? -$cmp : $cmp;
+    });
+    return $songs;
+}
+
+function cleanTitle($t) {
+    $kw = 'live|ao vivo|remaster(?:ed)?(?:\s+\d{4})?|\d{4}[\w\s\-]*mix|bonus track|explicit'
+        . '|radio edit|single version|album version|deluxe|acoustic|demo|instrumental|extended|intro|outro';
+    $t = preg_replace('/\s*[\(\[]\s*(?:'.$kw.')[^\)\]]*[\)\]]/iu', '', $t);
+    $t = preg_replace('/\s+-\s+(?:'.$kw.').*/iu', '', $t);
+    return trim($t);
+}
+
+function cifraUrl($song) {
+    $u = $song['cifra_url'] ?? ''; $s = $song['cifra_source'] ?? '';
+    if (!$u || $u==='N/A') return null;
+    if (preg_match('/^https?:\/\//', $u)) return $u;
+    if ($s==='ultimate_guitar') return 'https://tabs.ultimate-guitar.com/'.ltrim($u,'/');
+    return 'https://www.cifraclub.com.br/'.ltrim($u,'/');
+}
+function cifraLabel($song) {
+    $s = $song['cifra_source'] ?? '';
+    return match($s) { 'ultimate_guitar'=>'UG', 'cifraclub'=>'CC', default=>'↗' };
+}
+function detectSrc($u) {
+    if (!$u||$u==='N/A') return 'none';
+    if (str_contains($u,'ultimate-guitar.com')) return 'ultimate_guitar';
+    return 'cifraclub';
+}
+
+// ── Spotify helpers ──────────────────────────────────────────────
+function spotCreds() {
+    // envVal() reads .env directly — most reliable on shared hosts
+    // where $_ENV may be empty due to variables_order php.ini setting
+    $id  = envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID')
+        ?: getenv('CLIENT_ID') ?: getenv('SPOTIPY_CLIENT_ID')
+        ?: ($_ENV['CLIENT_ID'] ?? $_ENV['SPOTIPY_CLIENT_ID'] ?? '');
+    $sec = envVal('CLIENT_SECRET') ?: envVal('SPOTIPY_CLIENT_SECRET')
+        ?: getenv('CLIENT_SECRET') ?: getenv('SPOTIPY_CLIENT_SECRET')
+        ?: ($_ENV['CLIENT_SECRET'] ?? $_ENV['SPOTIPY_CLIENT_SECRET'] ?? '');
+    return [$id, $sec];
+}
+function hasSpotCreds() { [$i,$s]=spotCreds(); return $i&&$s; }
+function spotToken() {
+    [$id,$sec] = spotCreds();
+    if (!$id||!$sec) return null;
+    $ch = curl_init('https://accounts.spotify.com/api/token');
+    curl_setopt_array($ch,[
+        CURLOPT_HTTPHEADER    => ['Authorization: Basic '.base64_encode("$id:$sec"),
+                                  'Content-Type: application/x-www-form-urlencoded'],
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_POSTFIELDS => 'grant_type=client_credentials'
+    ]);
+    $r = json_decode(curl_exec($ch),true); curl_close($ch);
+    return $r['access_token'] ?? null;
+}
+function spotPlInfo($tok,$plId) {
+    $ch = curl_init("https://api.spotify.com/v1/playlists/$plId?fields=name,external_urls");
+    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true]);
+    $d = json_decode(curl_exec($ch),true); curl_close($ch);
+    if (empty($d['name'])) return null;
+    return ['name'=>$d['name'],'url'=>$d['external_urls']['spotify']??("https://open.spotify.com/playlist/$plId")];
+}
+function spotTracks($tok,$plId) {
+    $songs=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100";
+    while($url) {
+        $ch=curl_init($url);
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true]);
+        $d=json_decode(curl_exec($ch),true); curl_close($ch);
+        if(empty($d['items'])) break;
+        foreach($d['items'] as $item) {
+            $t=$item['track']??null;
+            if(!$t||empty($t['name'])) continue;
+            $songs[]=['title'=>cleanTitle($t['name']),'artist'=>$t['artists'][0]['name']??'',
+                      'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
+                      'duration_ms'=>(int)($t['duration_ms']??0),
+                      'spotify_url'=>$t['external_urls']['spotify']??''];
+        }
+        $url=$d['next']??null;
+    }
+    return $songs;
+}
+
+function fmtMs($ms) {
+    if(!$ms) return null;
+    $s=intdiv($ms,1000);$h=intdiv($s,3600);$s-=$h*3600;$m=intdiv($s,60);
+    return $h?sprintf('%dh %02dm',$h,$m):sprintf('%dm',$m);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AJAX / POST HANDLERS  (all return JSON or redirect)
+// ════════════════════════════════════════════════════════════════
+$ajax = $_SERVER['HTTP_X_REQUESTED_WITH']??'' === 'XMLHttpRequest'
+     || isset($_POST['_ajax']) || isset($_GET['_ajax']);
+
+function jsonOut($d){ header('Content-Type: application/json'); echo json_encode($d); exit; }
+function needAuth()  { if(!isAuthed()) jsonOut(['ok'=>false,'error'=>'auth']); }
+
+// Login
+if(($_POST['_action']??'')==='_login'){
+    if($_POST['password']===adminPwd()){$_SESSION['sl_authed']=true;jsonOut(['ok'=>true]);}
+    jsonOut(['ok'=>false,'error'=>'Senha incorreta.']);
+}
+// Logout
+if(isset($_GET['logout'])){ unset($_SESSION['sl_authed']); header('Location: index.php'); exit; }
+
+// Spotify lookup (AJAX GET)
+if(isset($_GET['spot_lookup'])){
+    $tok=spotToken();
+    if(!$tok) jsonOut(['ok'=>false,'error'=>'Sem credenciais Spotify']);
+    $info=spotPlInfo($tok,trim($_GET['spot_lookup']));
+    $info ? jsonOut(['ok'=>true]+$info) : jsonOut(['ok'=>false,'error'=>'Playlist não encontrada ou privada']);
+}
+
+>>>>>>> ec37bf19425bc4311d8ef26c57985325c5931224
 if($_SERVER['REQUEST_METHOD']==='POST'){
     $act=$_POST['_action']??'';
 
@@ -1250,11 +1390,17 @@ var _lookupTimer=null, _lookupOk=false, _lookupId=null;
 
 function extractSpotId(raw){
   raw=raw.trim();
+<<<<<<< HEAD
   // Full URL: extract ID after /playlist/
   var m=raw.match(/playlist\/([A-Za-z0-9]{10,})/);
   if(m) return m[1];
   // Raw ID: alphanumeric, 10–40 chars
   if(/^[A-Za-z0-9]{10,40}$/.test(raw)) return raw;
+=======
+  var m=raw.match(/playlist\/([A-Za-z0-9]+)/);
+  if(m) return m[1];
+  if(/^[A-Za-z0-9]{22}$/.test(raw)) return raw;
+>>>>>>> ec37bf19425bc4311d8ef26c57985325c5931224
   return null;
 }
 
