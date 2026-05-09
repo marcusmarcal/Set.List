@@ -436,11 +436,10 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .sb-pls{padding:12px 10px 6px;flex:1;overflow-y:auto}
 .sb-sec{font-family:'DM Mono',monospace;font-size:.56rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text3);padding:0 8px;margin-bottom:8px}
 .pl-item{
-  display:flex;align-items:center;gap:7px;
-  padding:6px 8px;border-radius:var(--r);
-  cursor:pointer;color:var(--text2);font-size:.78rem;
+  display:flex;align-items:center;gap:5px;
+  padding:4px 6px;border-radius:var(--r);
+  color:var(--text2);font-size:.78rem;
   position:relative;transition:background var(--tr);
-  border:none;background:none;width:100%;text-align:left;
 }
 .pl-item:hover{background:var(--bg3);color:var(--text)}
 .pl-item.active{background:var(--accent-dim);color:var(--accent)}
@@ -459,9 +458,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .pl-act-btn svg{width:11px;height:11px}
 
 /* drag handle in sidebar */
-.pl-drag{cursor:grab;color:var(--text3);opacity:0;display:flex;align-items:center;flex-shrink:0;transition:opacity var(--tr)}
-.pl-item:hover .pl-drag{opacity:.6}
-.pl-drag:active{cursor:grabbing}
+.pl-order-btns{display:flex;flex-direction:column;gap:0;flex-shrink:0}
+.pl-name-btn{background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:7px;flex:1;min-width:0;padding:0;color:inherit;font:inherit;text-align:left}
 
 .sb-bottom{padding:8px 10px 14px;border-top:1px solid var(--border);flex-shrink:0;margin-top:auto}
 .sb-add-pl{
@@ -672,31 +670,43 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         $sUrl  = $pl['spotify_url']??('https://open.spotify.com/playlist/'.$pl['spotify_id']);
       ?>
       <li data-id="<?= htmlspecialchars($pl['id']) ?>">
-        <button class="pl-item <?= $isAct?'active':'' ?>"
-                onclick="switchPl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>')">
-          <span class="pl-drag" title="Arrastar">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+        <div class="pl-item <?= $isAct?'active':'' ?>">
+          <span class="pl-order-btns">
+            <?php if($idx>0): ?>
+            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',-1)" title="Mover para cima">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+            </span>
+            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg></span>
+            <?php endif; ?>
+            <?php if($idx<count($playlists)-1): ?>
+            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',1)" title="Mover para baixo">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></span>
+            <?php endif; ?>
           </span>
-          <span class="pl-dot"></span>
-          <span class="pl-name-text"><?= htmlspecialchars($pl['name']) ?></span>
-          <?php if($idx===0): ?><span class="pl-def-badge">padrão</span><?php endif; ?>
+          <button class="pl-name-btn" onclick="switchPl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>')">
+            <span class="pl-dot"></span>
+            <span class="pl-name-text"><?= htmlspecialchars($pl['name']) ?></span>
+            <?php if($idx===0): ?><span class="pl-def-badge">padrão</span><?php endif; ?>
+          </button>
           <span class="pl-actions">
-            <span class="pl-act-btn" onclick="event.stopPropagation();openImportModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Importar do Spotify">
+            <span class="pl-act-btn" onclick="openImportModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Importar do Spotify">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
             </span>
-            <a class="pl-act-btn" href="<?= htmlspecialchars($sUrl) ?>" target="_blank" onclick="event.stopPropagation()" title="Abrir no Spotify">
+            <a class="pl-act-btn" href="<?= htmlspecialchars($sUrl) ?>" target="_blank" title="Abrir no Spotify">
               <svg viewBox="0 0 24 24" fill="currentColor" style="color:#1db954"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
             </a>
-            <span class="pl-act-btn" onclick="event.stopPropagation();openEditPlModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['spotify_id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Editar">
+            <span class="pl-act-btn" onclick="openEditPlModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['spotify_id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Editar">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </span>
             <?php if(count($playlists)>1): ?>
-            <span class="pl-act-btn danger" onclick="event.stopPropagation();deletePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Remover">
+            <span class="pl-act-btn danger" onclick="deletePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Remover">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
             </span>
             <?php endif; ?>
           </span>
-        </button>
+        </div>
       </li>
       <?php endforeach; ?>
     </ul>
@@ -1103,33 +1113,34 @@ $(function(){
   });
 });
 
-// ── Sidebar playlist drag reorder ──────────────────────────────
-$(function(){
-  $('#plSortable').sortable({
-    handle: '.pl-drag',
-    start: function(e, ui){
-      // If locked and not authed, cancel the drag immediately and prompt
-      if(LOCKED && !AUTHED){
-        $('#plSortable').sortable('cancel');
-        openLockModal(function(){ AUTHED=true; });
-        return false;
+// ── Sidebar playlist order — up/down buttons ───────────────────
+function movePl(id, dir) {
+  guardedAction(function(){
+    var items = $('#plSortable li');
+    var idx = -1;
+    items.each(function(i){ if($(this).data('id')===id) idx=i; });
+    if(idx<0) return;
+    var newIdx = idx + dir;
+    if(newIdx<0 || newIdx>=items.length) return;
+
+    // Swap in DOM
+    var el = items.eq(idx);
+    if(dir < 0) el.insertBefore(items.eq(newIdx));
+    else        el.insertAfter(items.eq(newIdx));
+
+    // Save new order
+    var ids=$('#plSortable li').map(function(){ return $(this).data('id'); }).get();
+    post({_action:'reorder_pls', order:JSON.stringify(ids)}, function(r){
+      if(r.ok){
+        $('#plSortable li').each(function(i){
+          var badge=$(this).find('.pl-def-badge');
+          if(i===0){ if(!badge.length) $(this).find('.pl-name-text').after(' <span class="pl-def-badge">padrão</span>'); }
+          else badge.remove();
+        });
       }
-    },
-    update: function(){
-      // Auth already confirmed in start; just save
-      var ids=$('#plSortable li').map(function(){ return $(this).data('id'); }).get();
-      post({_action:'reorder_pls', order:JSON.stringify(ids)}, function(r){
-        if(r.ok){
-          $('#plSortable li').each(function(i){
-            var badge=$(this).find('.pl-def-badge');
-            if(i===0){ if(!badge.length) $(this).find('.pl-name-text').after('<span class="pl-def-badge">padrão</span>'); }
-            else badge.remove();
-          });
-        }
-      });
-    }
+    });
   });
-});
+}
 
 // ── Search ─────────────────────────────────────────────────────
 $('#searchInput').on('input', function(){
