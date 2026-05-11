@@ -81,10 +81,12 @@ function sortSongs($songs, $col, $ord='asc') {
 }
 
 function cleanTitle($t) {
-    $kw = 'live|ao vivo|remaster(?:ed)?(?:\s+\d{4})?|\d{4}[\w\s\-]*mix|bonus track|explicit'
-        . '|radio edit|single version|album version|deluxe|acoustic|demo|instrumental|extended|intro|outro';
+    $kw = 'live|ao vivo|remaster(?:ed)?(?:\s+\d{4})?|\d{4}\s+remaster(?:ed)?|\d{4}[\w\s\-]*mix'
+        . '|bonus track|explicit|radio edit|single version|album version|deluxe|acoustic'
+        . '|demo|instrumental|extended|intro|outro';
     $t = preg_replace('/\s*[\(\[]\s*(?:'.$kw.')[^\)\]]*[\)\]]/iu', '', $t);
     $t = preg_replace('/\s+-\s+(?:'.$kw.').*/iu', '', $t);
+    $t = preg_replace('/\s*-\s*\d{4}\s+remaster(?:ed)?\s*$/iu', '', $t);
     return trim($t);
 }
 
@@ -215,7 +217,38 @@ if(isset($_GET['spot_lookup'])){
     jsonOut(['ok'=>true,'name'=>$info['name'],'url'=>$info['url']]);
 }
 
-// Debug endpoint — remove after testing (?spot_debug=1)
+// Cifra search on Cifraclub
+if(isset($_GET['cifra_search'])){
+    $title  = trim($_GET['title']??'');
+    $artist = trim($_GET['artist']??'');
+    if(!$title||!$artist) jsonOut(['ok'=>false,'error'=>'Missing params']);
+    $q   = urlencode($artist.' '.$title);
+    $url = 'https://www.cifraclub.com.br/busca/?q='.$q;
+    $ch  = curl_init($url);
+    curl_setopt_array($ch,[
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; SetList/1.0)',
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+    ]);
+    $html = curl_exec($ch); curl_close($ch);
+    // Try to find first song result link like /artist/song/
+    if($html && preg_match_all('#href="(https://www\.cifraclub\.com\.br/[a-z0-9\-]+/[a-z0-9\-]+/)"#i',$html,$m)){
+        // Filter out non-song pages (search, category pages)
+        $candidates = array_unique($m[1]);
+        $hit = null;
+        foreach($candidates as $c){
+            // Must have 2 path segments after domain (artist/song)
+            $path = parse_url($c,PHP_URL_PATH);
+            $segs = array_filter(explode('/',$path));
+            if(count($segs)===2){ $hit=$c; break; }
+        }
+        if($hit) jsonOut(['ok'=>true,'url'=>$hit]);
+    }
+    jsonOut(['ok'=>false,'error'=>'Não encontrada']);
+}
 if(isset($_GET['spot_debug'])){
     header('Content-Type: application/json');
     [$cid,$csec]=spotCreds();
@@ -300,26 +333,42 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         savePlaylists($sorted); jsonOut(['ok'=>true]);
     }
 
-    // ── Add playlist (fetch name from Spotify, import immediately) ──
+    // ── Add playlist (with or without Spotify) ──
     if($act==='add_pl'){
         needAuth();
         $spotId=trim($_POST['spotify_id']??'');
-        if(!$spotId) jsonOut(['ok'=>false,'error'=>'ID obrigatório']);
-        $tok=spotToken();
-        if(!$tok) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas no .env']);
-        $info=spotPlInfo($tok,$spotId);
-        if(!$info) jsonOut(['ok'=>false,'error'=>'Playlist não encontrada ou privada']);
-        $pls=loadPlaylists();
-        $slug=trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$info['name'])),'-')?:'playlist';
-        $exist=array_column($pls,'id');$base=$slug;$n=2;
-        while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
-        $newPl=['id'=>$slug,'name'=>$info['name'],'spotify_id'=>$spotId,
-                'spotify_url'=>$info['url'],'is_default'=>count($pls)===0];
-        $pls[]=$newPl; savePlaylists($pls);
-        $tracks=spotTracks($tok,$spotId);
-        if($tracks) saveSongs($newPl,$tracks);
-        jsonOut(['ok'=>true,'id'=>$slug,'name'=>$info['name'],'spotify_url'=>$info['url'],
-                 'track_count'=>count($tracks)]);
+        $manualName=trim($_POST['name']??'');
+
+        if($spotId){
+            // With Spotify ID
+            $tok=spotToken();
+            if(!$tok) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas no .env']);
+            $info=spotPlInfo($tok,$spotId);
+            if(!$info) jsonOut(['ok'=>false,'error'=>'Playlist não encontrada ou privada']);
+            $name=$manualName?:$info['name'];
+            $pls=loadPlaylists();
+            $slug=trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$name)),'-')?:'playlist';
+            $exist=array_column($pls,'id');$base=$slug;$n=2;
+            while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+            $newPl=['id'=>$slug,'name'=>$name,'spotify_id'=>$spotId,
+                    'spotify_url'=>$info['url'],'is_default'=>count($pls)===0];
+            $pls[]=$newPl; savePlaylists($pls);
+            $tracks=spotTracks($tok,$spotId);
+            if($tracks) saveSongs($newPl,$tracks);
+            jsonOut(['ok'=>true,'id'=>$slug,'name'=>$name,'spotify_url'=>$info['url'],
+                     'track_count'=>count($tracks)]);
+        } else {
+            // Without Spotify — name is required
+            if(!$manualName) jsonOut(['ok'=>false,'error'=>'O nome é obrigatório.']);
+            $pls=loadPlaylists();
+            $slug=trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$manualName)),'-')?:'playlist';
+            $exist=array_column($pls,'id');$base=$slug;$n=2;
+            while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+            $newPl=['id'=>$slug,'name'=>$manualName,'spotify_id'=>'','is_default'=>count($pls)===0];
+            $pls[]=$newPl; savePlaylists($pls);
+            saveSongs($newPl,[]);
+            jsonOut(['ok'=>true,'id'=>$slug,'name'=>$manualName,'spotify_url'=>'','track_count'=>0]);
+        }
     }
 
     // ── Edit playlist ──
@@ -327,12 +376,18 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         needAuth();
         $pls=loadPlaylists(); $tid=$_POST['target_id']??'';
         $newSpotId=trim($_POST['spotify_id']??'');
+        $newName=trim($_POST['name']??'');
         foreach($pls as &$p){
             if($p['id']!==$tid) continue;
+            if($newName) $p['name']=$newName;
             if($newSpotId&&$newSpotId!==$p['spotify_id']){
                 $tok=spotToken();
                 if($tok){$info=spotPlInfo($tok,$newSpotId);
-                    if($info){$p['name']=$info['name'];$p['spotify_url']=$info['url'];}
+                    if($info){
+                        // Only overwrite name from Spotify if user didn't set one manually
+                        if(!$newName) $p['name']=$info['name'];
+                        $p['spotify_url']=$info['url'];
+                    }
                 }
                 $p['spotify_id']=$newSpotId;
             }
@@ -643,13 +698,55 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 }
 
 @media print{
-  .sidebar,.topbar,.search-row,.td-actions,.btn,.hamburger,.sb-backdrop{display:none!important}
+  .sidebar,.topbar,.search-row,.td-actions,.btn,.hamburger,.sb-backdrop,
+  .modal-overlay,.stats-row,.ron,.cp-toast{display:none!important}
   .main{margin-left:0}
-  body{background:#fff;color:#000}
-  .table-wrap{border:1px solid #ccc}
-  thead th,tbody td{color:#000!important}
-  thead th{background:#eee!important}
+  body{background:#fff;color:#000;font-family:'DM Sans',sans-serif}
+  .content{padding:0}
+  .print-header{display:block!important;margin-bottom:14px}
+  .table-wrap{border:1px solid #bbb;border-radius:0}
+  table{width:100%;border-collapse:collapse}
+  thead th{background:#eee!important;color:#333!important;font-size:.6rem;letter-spacing:.1em;padding:6px 10px;border-bottom:1px solid #bbb}
+  tbody td{color:#111!important;border-bottom:1px solid #e0e0e0}
+  tbody tr:last-child td{border-bottom:none}
+  .td-num{font-family:monospace;color:#555!important}
+  .td-cifra,.td-spot{display:none}
+  th:nth-child(1),td:nth-child(1){display:none}
+  .badge{display:none}
+
+  /* 1 page — compact */
+  body.print-1page{font-size:9pt}
+  body.print-1page thead th{padding:3px 8px;font-size:7pt}
+  body.print-1page tbody td{padding:2px 8px;font-size:8.5pt}
+  body.print-1page .print-header h2{font-size:13pt}
+  body.print-1page .print-header p{font-size:7pt}
+  @page.print-1page{size:A4 portrait;margin:1cm 1.5cm}
+
+  /* 2 pages — normal */
+  body.print-2page{font-size:11pt}
+  body.print-2page thead th{padding:5px 10px;font-size:8pt}
+  body.print-2page tbody td{padding:5px 10px;font-size:10pt}
+  body.print-2page .print-header h2{font-size:16pt}
+  body.print-2page .print-header p{font-size:8pt}
+
+  @page{margin:1.5cm 1.8cm;size:A4 portrait}
 }
+
+/* print header (hidden on screen) */
+.print-header{display:none}
+.print-header h2{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:700;margin:0 0 2px 0;color:#111}
+.print-header p{font-family:monospace;font-size:.62rem;color:#666;margin:0 0 10px 0;letter-spacing:.06em;text-transform:uppercase}
+.print-header hr{border:none;border-top:1.5px solid #222;margin-bottom:12px}
+
+/* print modal */
+#printModal .modal{max-width:340px}
+.print-opt{display:flex;gap:10px;margin-bottom:16px}
+.print-opt-btn{flex:1;padding:14px 10px;border-radius:8px;border:2px solid var(--border2);background:var(--bg3);color:var(--text2);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:.8rem;transition:all .15s;text-align:center}
+.print-opt-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+.print-opt-btn.selected{border-color:var(--accent);background:var(--accent-dim);color:var(--accent)}
+.print-opt-btn .pob-icon{font-size:1.4rem;display:block;margin-bottom:4px}
+.print-opt-btn .pob-label{font-weight:600;display:block}
+.print-opt-btn .pob-sub{font-size:.68rem;color:var(--text3);display:block;margin-top:2px}
 </style>
 </head>
 <body>
@@ -691,12 +788,14 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <?php if($idx===0): ?><span class="pl-def-badge">padrão</span><?php endif; ?>
           </button>
           <span class="pl-actions">
+            <?php if(!empty($pl['spotify_id'])): ?>
             <span class="pl-act-btn" onclick="openImportModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Importar do Spotify">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
             </span>
             <a class="pl-act-btn" href="<?= htmlspecialchars($sUrl) ?>" target="_blank" title="Abrir no Spotify">
               <svg viewBox="0 0 24 24" fill="currentColor" style="color:#1db954"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
             </a>
+            <?php endif; ?>
             <span class="pl-act-btn" onclick="openEditPlModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['spotify_id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Editar">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </span>
@@ -727,7 +826,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <?php endif; ?>
     <button class="sb-add-pl" id="addPlBtn">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      Nova lista do Spotify
+      Nova lista
     </button>
   </div>
 </aside>
@@ -759,6 +858,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     </div>
     <div style="display:flex;gap:7px;align-items:center">
       <span class="saving" id="savingInd">Salvo ✓</span>
+      <button class="btn btn-outline" id="printBtn" title="Imprimir lista" onclick="openPrintModal()">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        <span class="btn-lbl">Imprimir</span>
+      </button>
       <button class="btn btn-outline" id="copyListBtn" title="Copiar lista como texto">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         <span class="btn-lbl">Copiar</span>
@@ -771,6 +874,13 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   </div>
 
   <div class="content fade-up">
+    <!-- Print-only header (hidden on screen) -->
+    <div class="print-header" id="printHeader">
+      <h2><?= htmlspecialchars($activePl['name']??'SetList') ?></h2>
+      <p><?= $totalSongs ?> músicas<?= $durStr?' · '.$durStr:'' ?> · <span id="printDateSpan"></span></p>
+      <hr>
+    </div>
+
     <?php if(!$authed&&$locked): ?>
     <div class="ron">
       <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -781,7 +891,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="stats-row">
       <div class="stat-card"><div class="stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Músicas</div></div>
       <div class="stat-card"><div class="stat-num"><?= str_pad($artistCount,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Artistas</div></div>
-      <div class="stat-card"><div class="stat-num"><?= str_pad($withCifra,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Com cifra</div></div>
       <?php if($durStr): ?>
       <div class="stat-card"><div class="stat-num" style="font-size:1.2rem"><?= $durStr ?></div><div class="stat-label">Duração</div></div>
       <?php endif; ?>
@@ -898,20 +1007,53 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   </div>
 </div>
 
+<!-- Print modal -->
+<div class="modal-overlay" id="printModal">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-title">Imprimir Lista</div>
+    <div class="modal-sub">Escolhe quantas páginas queres usar.</div>
+    <div class="print-opt">
+      <button class="print-opt-btn selected" id="printOpt1" onclick="selectPrintOpt(1)">
+        <span class="pob-icon">📄</span>
+        <span class="pob-label">1 Página</span>
+        <span class="pob-sub">Fonte reduzida,<br>tudo numa folha</span>
+      </button>
+      <button class="print-opt-btn" id="printOpt2" onclick="selectPrintOpt(2)">
+        <span class="pob-icon">📄📄</span>
+        <span class="pob-label">2 Páginas</span>
+        <span class="pob-sub">Fonte normal,<br>mais espaçado</span>
+      </button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('printModal')">Cancelar</button>
+      <button class="btn btn-primary" onclick="doPrint()">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        Imprimir
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Add playlist modal -->
 <div class="modal-overlay" id="addPlModal">
   <div class="modal">
     <div class="modal-title">Nova Lista</div>
-    <div class="modal-sub">Cole o ID ou URL da playlist — o nome é buscado automaticamente.</div>
+    <div class="modal-sub">Cria uma lista vazia ou importa do Spotify.</div>
     <div class="fg">
-      <label class="fl">ID ou URL do Spotify</label>
+      <label class="fl">Nome da Lista <span style="color:var(--danger)">*</span></label>
+      <input class="fi" type="text" id="plName" placeholder="Ex: Rock Clássico" autocomplete="off">
+    </div>
+    <div class="fg" id="plSpotFg">
+      <label class="fl" style="display:flex;align-items:center;justify-content:space-between">
+        <span>ID ou URL do Spotify <span style="font-size:.65rem;color:var(--text3)">(opcional)</span></span>
+      </label>
       <input class="fi" type="text" id="plSpotRaw" placeholder="4pcomesNQA6… ou https://open.spotify.com/playlist/…" autocomplete="off">
       <div class="ls" id="plLookupStatus"></div>
     </div>
     <div id="plAddError" class="alert alert-err" style="display:none"></div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('addPlModal')">Cancelar</button>
-      <button class="btn btn-primary" id="plAddBtn" disabled>Criar e Importar →</button>
+      <button class="btn btn-primary" id="plAddBtn">Criar Lista</button>
     </div>
   </div>
 </div>
@@ -922,9 +1064,13 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="modal-title">Editar Lista</div>
     <div class="modal-sub" id="editPlSub"></div>
     <div class="fg">
+      <label class="fl">Nome da Lista</label>
+      <input class="fi" type="text" id="editPlName" placeholder="Ex: Rock Clássico">
+    </div>
+    <div class="fg">
       <label class="fl">ID da Playlist Spotify</label>
       <input class="fi" type="text" id="editPlSpotId">
-      <div style="font-size:.68rem;color:var(--text3);margin-top:4px">Ao alterar o ID, o nome da lista é actualizado ao guardar.</div>
+      <div style="font-size:.68rem;color:var(--text3);margin-top:4px">Ao alterar o ID, o nome é actualizado a partir do Spotify (a menos que tenhas definido um nome manualmente).</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('editPlModal')">Cancelar</button>
@@ -1175,14 +1321,32 @@ function openSongModal(mode, idx) {
     $('#songModalTitle').text('Editar Música');
     $('#songModalSub').text('#'+String(idx+1).padStart(2,'0'));
     $('#smTitle').val(s.title); $('#smArtist').val(s.artist);
-    var cu=s.cifra_url==='N/A'?'':s.cifra_url;
+    var hasCifra = s.cifra_url && s.cifra_url!=='N/A' && s.cifra_url!=='';
+    var cu = hasCifra ? s.cifra_url : '';
     $('#smCifraUrl').val(cu);
     setSrc(s.cifra_source||'cifraclub');
     $('#songModalMode').val('edit'); $('#songModalIdx').val(idx);
     $('#smSaveBtn').text('Salvar');
+    // Auto-search cifra if not saved and source is cifraclub
+    if(!hasCifra && (s.cifra_source||'cifraclub')==='cifraclub'){
+      searchCifraAuto(s.title, s.artist);
+    }
   }
   openModal('songModal');
   setTimeout(function(){ $('#smTitle').focus(); }, 80);
+}
+
+// ── Cifra auto-search ──────────────────────────────────────────
+function searchCifraAuto(title, artist){
+  $('#smCifraHint').html('<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> A buscar cifra…');
+  $.get(location.pathname, {cifra_search:1, title:title, artist:artist}, function(r){
+    if(r.ok && r.url){
+      $('#smCifraUrl').val(r.url);
+      $('#smCifraHint').html('✓ Cifra encontrada automaticamente. Verifica antes de salvar.');
+    } else {
+      $('#smCifraHint').html('Cifra não encontrada — podes inserir manualmente.');
+    }
+  },'json').fail(function(){ $('#smCifraHint').html(''); });
 }
 
 $('#addSongBtn').on('click', function(){ guardedAction(function(){ openSongModal('add'); }); });
@@ -1267,39 +1431,41 @@ var _lookupTimer=null, _lookupOk=false, _lookupId=null;
 
 function extractSpotId(raw){
   raw=raw.trim();
-  // Full URL: extract ID after /playlist/
   var m=raw.match(/playlist\/([A-Za-z0-9]{10,})/);
   if(m) return m[1];
-  // Raw ID: alphanumeric, 10–40 chars
   if(/^[A-Za-z0-9]{10,40}$/.test(raw)) return raw;
   return null;
 }
 
 $('#addPlBtn').on('click',function(){
   guardedAction(function(){
-    $('#plSpotRaw').val(''); $('#plLookupStatus').text('').attr('class','ls');
-    $('#plAddBtn').prop('disabled',true); $('#plAddError').hide();
+    $('#plName').val(''); $('#plSpotRaw').val('');
+    $('#plLookupStatus').text('').attr('class','ls');
+    $('#plAddError').hide();
     _lookupOk=false; _lookupId=null;
     openModal('addPlModal');
-    setTimeout(function(){ $('#plSpotRaw').focus(); },80);
+    setTimeout(function(){ $('#plName').focus(); },80);
   });
 });
 
 $('#plSpotRaw').on('input',function(){
   clearTimeout(_lookupTimer); _lookupOk=false; _lookupId=null;
-  $('#plAddBtn').prop('disabled',true);
-  var id=extractSpotId($(this).val());
-  if(!id){ $('#plLookupStatus').text($(this).val().length>3?'ID não reconhecido.':'').attr('class','ls'); return; }
+  var raw=$(this).val().trim();
+  if(!raw){ $('#plLookupStatus').text('').attr('class','ls'); return; }
+  var id=extractSpotId(raw);
+  if(!id){ $('#plLookupStatus').text(raw.length>3?'ID não reconhecido.':'').attr('class','ls'); return; }
   if(!HAS_SPOT){
-    _lookupId=id; _lookupOk=true; $('#plAddBtn').prop('disabled',false);
-    $('#plLookupStatus').html('✓ ID: '+id+' (sem credenciais Spotify — nome genérico)').attr('class','ls ok');
+    _lookupId=id; _lookupOk=true;
+    $('#plLookupStatus').html('✓ ID: '+id+' (sem credenciais Spotify — nome definido manualmente)').attr('class','ls ok');
     return;
   }
-  $('#plLookupStatus').html('<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> A buscar…').attr('class','ls loading');
+  $('#plLookupStatus').html('<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> A buscar no Spotify…').attr('class','ls loading');
   _lookupTimer=setTimeout(function(){
     $.get('?pl='+PL_ID,{spot_lookup:id},function(r){
       if(r.ok){
-        _lookupId=id; _lookupOk=true; $('#plAddBtn').prop('disabled',false);
+        _lookupId=id; _lookupOk=true;
+        // Auto-fill name if empty
+        if(!$('#plName').val().trim()) $('#plName').val(r.name);
         $('#plLookupStatus').html('✓ <strong>'+escH(r.name)+'</strong> &nbsp;<a href="'+r.url+'" target="_blank" style="color:var(--accent);font-size:.65rem">abrir ↗</a>').attr('class','ls ok');
       } else {
         $('#plLookupStatus').text('✗ '+(r.error||'Não encontrada')).attr('class','ls err');
@@ -1307,32 +1473,45 @@ $('#plSpotRaw').on('input',function(){
     },'json').fail(function(){ $('#plLookupStatus').text('✗ Erro de ligação').attr('class','ls err'); });
   },600);
 });
-$('#plSpotRaw').on('keydown',function(e){ if(e.key==='Enter'&&_lookupOk) $('#plAddBtn').click(); });
+$('#plSpotRaw').on('keydown',function(e){ if(e.key==='Enter') doCreatePl(); });
+$('#plName').on('keydown',function(e){ if(e.key==='Enter') doCreatePl(); });
 
-$('#plAddBtn').on('click',function(){
-  if(!_lookupOk||!_lookupId) return;
-  $(this).prop('disabled',true).text('A importar…');
-  $.post('?pl='+PL_ID,{_action:'add_pl',spotify_id:_lookupId,pl:PL_ID},function(r){
-    $('#plAddBtn').prop('disabled',false).text('Criar e Importar →');
+function doCreatePl(){
+  var name=$('#plName').val().trim();
+  if(!name){ $('#plAddError').text('O nome da lista é obrigatório.').show(); return; }
+  var spotId=_lookupId||'';
+  // If user typed a Spotify URL/ID but lookup hasn't resolved, try raw
+  if(!spotId){
+    var raw=$('#plSpotRaw').val().trim();
+    if(raw){ spotId=extractSpotId(raw)||''; }
+  }
+  $('#plAddError').hide();
+  var btn=$('#plAddBtn');
+  btn.prop('disabled',true).text('A criar…');
+  $.post('?pl='+PL_ID,{_action:'add_pl',name:name,spotify_id:spotId,pl:PL_ID},function(r){
+    btn.prop('disabled',false).text('Criar Lista');
     if(r.ok){ window.location.href='?pl='+encodeURIComponent(r.id); }
     else { $('#plAddError').text(r.error||'Erro').show(); }
   },'json');
-});
+}
+$('#plAddBtn').on('click', doCreatePl);
 
 // ── Edit playlist ──────────────────────────────────────────────
 function openEditPlModal(id,spotId,name){
   guardedAction(function(){
     _editPlId=id;
-    $('#editPlSub').text('Lista: '+name);
+    $('#editPlSub').text('A editar: '+name);
+    $('#editPlName').val(name);
     $('#editPlSpotId').val(spotId);
     openModal('editPlModal');
-    setTimeout(function(){ $('#editPlSpotId').focus(); },80);
+    setTimeout(function(){ $('#editPlName').focus(); },80);
   });
 }
 $('#editPlSaveBtn').on('click',function(){
   var newSpotId=$('#editPlSpotId').val().trim();
+  var newName=$('#editPlName').val().trim();
   $(this).prop('disabled',true).text('…');
-  $.post('?pl='+PL_ID,{_action:'edit_pl',target_id:_editPlId,spotify_id:newSpotId,pl:PL_ID},function(r){
+  $.post('?pl='+PL_ID,{_action:'edit_pl',target_id:_editPlId,spotify_id:newSpotId,name:newName,pl:PL_ID},function(r){
     $('#editPlSaveBtn').prop('disabled',false).text('Salvar');
     if(r.ok){ closeModal('editPlModal'); window.location.reload(); }
   },'json');
@@ -1385,6 +1564,34 @@ $('#copyListBtn').on('click',function(){
     toast('Copiado ✓');
   }
 });
+
+// ── Print ──────────────────────────────────────────────────────
+var _printPages = 1;
+
+function openPrintModal() {
+  _printPages = 1;
+  $('#printOpt1').addClass('selected');
+  $('#printOpt2').removeClass('selected');
+  openModal('printModal');
+}
+function selectPrintOpt(n) {
+  _printPages = n;
+  $('#printOpt1').toggleClass('selected', n===1);
+  $('#printOpt2').toggleClass('selected', n===2);
+}
+function doPrint() {
+  // Set date in print header
+  var date = new Date().toLocaleDateString('pt-PT',{day:'2-digit',month:'long',year:'numeric'});
+  $('#printDateSpan').text(date);
+  // Apply body class for page sizing
+  $('body').removeClass('print-1page print-2page').addClass('print-'+_printPages+'page');
+  closeModal('printModal');
+  setTimeout(function(){
+    window.print();
+    // Clean up class after print dialog closes
+    setTimeout(function(){ $('body').removeClass('print-1page print-2page'); }, 500);
+  }, 200);
+}
 
 // ── Utility ────────────────────────────────────────────────────
 function escH(s){ return $('<span>').text(s).html(); }
