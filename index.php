@@ -214,6 +214,151 @@ function spotTracks($tok,$plId) {
     return $songs;
 }
 
+// ── Spotify OAuth (Authorization Code) ──────────────────────────
+function spotOAuthUrl() {
+    [$id,] = spotCreds();
+    if (!$id) return null;
+    $redirect = spotRedirectUri();
+    $scope = 'playlist-modify-public playlist-modify-private playlist-read-private';
+    $state = bin2hex(random_bytes(8));
+    $_SESSION['spot_oauth_state'] = $state;
+    return 'https://accounts.spotify.com/authorize?'
+        . http_build_query([
+            'client_id'     => $id,
+            'response_type' => 'code',
+            'redirect_uri'  => $redirect,
+            'scope'         => $scope,
+            'state'         => $state,
+        ]);
+}
+function spotRedirectUri() {
+    $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS']!=='off') ? 'https' : 'http';
+    return $proto.'://'.$_SERVER['HTTP_HOST'].strtok($_SERVER['REQUEST_URI'],'?').'?spot_oauth_cb=1';
+}
+function spotExchangeCode($code) {
+    [$id,$sec] = spotCreds();
+    $ch = curl_init('https://accounts.spotify.com/api/token');
+    curl_setopt_array($ch,[
+        CURLOPT_HTTPHEADER     => ['Authorization: Basic '.base64_encode("$id:$sec"),'Content-Type: application/x-www-form-urlencoded'],
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS     => http_build_query(['grant_type'=>'authorization_code','code'=>$code,'redirect_uri'=>spotRedirectUri()]),
+        CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => false, CURLOPT_TIMEOUT => 15,
+    ]);
+    $r = json_decode(curl_exec($ch),true); curl_close($ch);
+    if (!empty($r['access_token'])) {
+        $_SESSION['spot_user_token']   = $r['access_token'];
+        $_SESSION['spot_user_refresh'] = $r['refresh_token'] ?? '';
+        $_SESSION['spot_user_expiry']  = time() + ($r['expires_in'] ?? 3600) - 60;
+        return true;
+    }
+    return false;
+}
+function spotRefreshUserToken() {
+    if (empty($_SESSION['spot_user_refresh'])) return false;
+    [$id,$sec] = spotCreds();
+    $ch = curl_init('https://accounts.spotify.com/api/token');
+    curl_setopt_array($ch,[
+        CURLOPT_HTTPHEADER     => ['Authorization: Basic '.base64_encode("$id:$sec"),'Content-Type: application/x-www-form-urlencoded'],
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS     => http_build_query(['grant_type'=>'refresh_token','refresh_token'=>$_SESSION['spot_user_refresh']]),
+        CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => false, CURLOPT_TIMEOUT => 15,
+    ]);
+    $r = json_decode(curl_exec($ch),true); curl_close($ch);
+    if (!empty($r['access_token'])) {
+        $_SESSION['spot_user_token']  = $r['access_token'];
+        $_SESSION['spot_user_expiry'] = time() + ($r['expires_in'] ?? 3600) - 60;
+        return true;
+    }
+    return false;
+}
+function spotUserToken() {
+    if (empty($_SESSION['spot_user_token'])) return null;
+    if (!empty($_SESSION['spot_user_expiry']) && time() > $_SESSION['spot_user_expiry']) {
+        if (!spotRefreshUserToken()) return null;
+    }
+    return $_SESSION['spot_user_token'];
+}
+function hasSpotUserToken() { return !empty(spotUserToken()); }
+
+// Get Spotify user id
+function spotUserId($tok) {
+    $ch = curl_init('https://api.spotify.com/v1/me');
+    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+    $r = json_decode(curl_exec($ch),true); curl_close($ch);
+    return $r['id'] ?? null;
+}
+
+// Get track IDs currently in a Spotify playlist
+function spotPlaylistTrackUris($tok,$plId) {
+    $uris=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100&fields=next,items(track(uri,name,artists))";
+    while($url) {
+        $ch=curl_init($url);
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>20]);
+        $d=json_decode(curl_exec($ch),true); curl_close($ch);
+        if(empty($d['items'])) break;
+        foreach($d['items'] as $item) {
+            $t=$item['track']??null;
+            if($t&&!empty($t['uri'])) $uris[$t['uri']]=['name'=>$t['name']??'','artist'=>$t['artists'][0]['name']??''];
+        }
+        $url=$d['next']??null;
+    }
+    return $uris;
+}
+
+// Add tracks to Spotify playlist (max 100 per call)
+function spotAddTracks($tok,$plId,$uris) {
+    foreach(array_chunk($uris,100) as $chunk){
+        $ch=curl_init("https://api.spotify.com/v1/playlists/$plId/tracks");
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok","Content-Type: application/json"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['uris'=>array_values($chunk)]),CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>20]);
+        curl_exec($ch); curl_close($ch);
+    }
+}
+
+// Remove tracks from Spotify playlist
+function spotRemoveTracks($tok,$plId,$uris) {
+    foreach(array_chunk($uris,100) as $chunk){
+        $tracks=array_map(function($u){return['uri'=>$u];},$chunk);
+        $ch=curl_init("https://api.spotify.com/v1/playlists/$plId/tracks");
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok","Content-Type: application/json"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_CUSTOMREQUEST=>'DELETE',CURLOPT_POSTFIELDS=>json_encode(['tracks'=>$tracks]),CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>20]);
+        curl_exec($ch); curl_close($ch);
+    }
+}
+
+// Search Spotify for a track URI by title+artist
+function spotSearchTrack($tok,$title,$artist) {
+    $q=urlencode("track:$title artist:$artist");
+    $ch=curl_init("https://api.spotify.com/v1/search?q=$q&type=track&limit=1");
+    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+    $d=json_decode(curl_exec($ch),true); curl_close($ch);
+    return $d['tracks']['items'][0]['uri'] ?? null;
+}
+
+// Get composers (writers) from Spotify track features — uses audio-features endpoint for track_id
+// Note: Spotify API does not expose composers directly via public API.
+// We use the track's artists as a fallback and fetch album info to get any credited composer info.
+// For true composer metadata we search the track and read the artists array + album.
+function spotTrackComposers($tok,$trackUri) {
+    // Extract track ID from URI spotify:track:XXXX or URL
+    if(preg_match('/track[\/:]([A-Za-z0-9]{10,})/',$trackUri,$m)) $trackId=$m[1];
+    else return null;
+    $ch=curl_init("https://api.spotify.com/v1/tracks/$trackId");
+    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+    $d=json_decode(curl_exec($ch),true); curl_close($ch);
+    if(empty($d['artists'])) return null;
+    // Spotify public API does not expose songwriters separately from performers.
+    // We return all credited artists (which often includes composers for solo acts).
+    return array_map(function($a){return $a['name'];},$d['artists']);
+}
+
+// Fetch composers for a song via Spotify search
+function spotFetchComposer($tok,$title,$artist) {
+    $uri = spotSearchTrack($tok,$title,$artist);
+    if(!$uri) return null;
+    $composers = spotTrackComposers($tok,$uri);
+    if(!$composers) return null;
+    return implode(', ',$composers);
+}
+
 function fmtMs($ms) {
     if(!$ms) return null;
     $s=intdiv($ms,1000);$h=intdiv($s,3600);$s-=$h*3600;$m=intdiv($s,60);
@@ -228,6 +373,23 @@ $ajax = $_SERVER['HTTP_X_REQUESTED_WITH']??'' === 'XMLHttpRequest'
 
 function jsonOut($d){ header('Content-Type: application/json'); echo json_encode($d); exit; }
 function needAuth()  { if(!isAuthed()) jsonOut(['ok'=>false,'error'=>'auth']); }
+
+// ── Spotify OAuth callback ────────────────────────────────────────
+if (isset($_GET['spot_oauth_cb'])) {
+    if (!empty($_GET['code']) && ($_GET['state']??'') === ($_SESSION['spot_oauth_state']??'__')) {
+        spotExchangeCode($_GET['code']);
+    }
+    $redirect = strtok($_SERVER['REQUEST_URI'],'?');
+    $pl = $_GET['pl'] ?? '';
+    header('Location: '.$redirect.($pl?'?pl='.urlencode($pl):''));
+    exit;
+}
+if (isset($_GET['spot_logout'])) {
+    unset($_SESSION['spot_user_token'],$_SESSION['spot_user_refresh'],$_SESSION['spot_user_expiry']);
+    header('Location: '.strtok($_SERVER['REQUEST_URI'],'?').'?pl='.urlencode($_GET['pl']??''));
+    exit;
+}
+
 
 // Login
 if(($_POST['_action']??'')==='_login'){
@@ -432,9 +594,136 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         } else { saveSongs($targetPl,$tracks); $cnt=count($tracks); }
         jsonOut(['ok'=>true,'count'=>$cnt,'name'=>$targetPl['name'],'pl_id'=>$tid]);
     }
+    // ── Merge playlists ──
+    if($act==='merge_playlists'){
+        needAuth();
+        $sourceIds = json_decode($_POST['source_ids']??'[]',true);
+        $newName   = trim($_POST['name']??'');
+        if(!$newName||empty($sourceIds)) jsonOut(['ok'=>false,'error'=>'Nome e listas de origem são obrigatórios.']);
+        $pls = loadPlaylists();
+        $slug = trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$newName)),'-')?:'merged';
+        $exist = array_column($pls,'id'); $base=$slug; $n=2;
+        while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+        $newPl = ['id'=>$slug,'name'=>$newName,'spotify_id'=>'','is_default'=>false];
+        $merged = []; $seen = [];
+        foreach($sourceIds as $sid){
+            $srcPl=null; foreach($pls as $p) if($p['id']===$sid){$srcPl=$p;break;}
+            if(!$srcPl) continue;
+            foreach(loadSongs($srcPl) as $s){
+                $key = strtolower($s['title'].'|'.$s['artist']);
+                if(!isset($seen[$key])){ $seen[$key]=true; $merged[]=$s; }
+            }
+        }
+        $pls[]=$newPl; savePlaylists($pls);
+        saveSongs($newPl,$merged);
+        jsonOut(['ok'=>true,'id'=>$slug,'name'=>$newName,'count'=>count($merged)]);
+    }
+
+    // ── Fetch composer from Spotify ──
+    if($act==='fetch_composer'){
+        needAuth();
+        $tok = spotToken();
+        if(!$tok) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas']);
+        $title  = trim($_POST['title']??'');
+        $artist = trim($_POST['artist']??'');
+        if(!$title||!$artist) jsonOut(['ok'=>false,'error'=>'Título e artista são obrigatórios']);
+        $composer = spotFetchComposer($tok,$title,$artist);
+        if(!$composer) jsonOut(['ok'=>false,'error'=>'Compositor não encontrado no Spotify para esta faixa.']);
+        jsonOut(['ok'=>true,'composer'=>$composer]);
+    }
+
+    // ── Fetch composers for all songs in playlist ──
+    if($act==='fetch_all_composers'){
+        needAuth();
+        $tok = spotToken();
+        if(!$tok) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas']);
+        $pl = getActivePl(); $songs = loadSongs($pl);
+        $updated = 0;
+        foreach($songs as &$s){
+            if(!empty($s['composer'])) continue; // skip already fetched
+            $c = spotFetchComposer($tok,$s['title'],$s['artist']);
+            if($c){ $s['composer']=$c; $updated++; }
+        } unset($s);
+        saveSongs($pl,$songs);
+        jsonOut(['ok'=>true,'updated'=>$updated,'songs'=>$songs]);
+    }
+
+    // ── Spotify sync diff ──
+    if($act==='spot_diff'){
+        needAuth();
+        $pl = getActivePl();
+        if(empty($pl['spotify_id'])) jsonOut(['ok'=>false,'error'=>'Esta lista não tem playlist Spotify associada.']);
+        $tok = spotUserToken();
+        if(!$tok) jsonOut(['ok'=>false,'error'=>'auth_required']);
+        $spotTracks = spotPlaylistTrackUris($tok,$pl['spotify_id']);
+        $localSongs = loadSongs($pl);
+        // Build local lookup by title+artist slug
+        $localKeys = [];
+        foreach($localSongs as $s) $localKeys[strtolower($s['title'].'|'.$s['artist'])] = $s;
+        // Find what's on Spotify but not local (only_spotify)
+        $onlySpotify = [];
+        foreach($spotTracks as $uri=>$info){
+            $key = strtolower($info['name'].'|'.$info['artist']);
+            if(!isset($localKeys[$key])) $onlySpotify[]=array_merge($info,['uri'=>$uri]);
+        }
+        // Find what's local but not on Spotify (only_local) — need to search URIs
+        $onlyLocal = [];
+        $spotKeyMap = [];
+        foreach($spotTracks as $uri=>$info) $spotKeyMap[strtolower($info['name'].'|'.$info['artist'])]=$uri;
+        foreach($localSongs as $s){
+            $key = strtolower($s['title'].'|'.$s['artist']);
+            if(!isset($spotKeyMap[$key])) $onlyLocal[]=$s;
+        }
+        jsonOut(['ok'=>true,'only_spotify'=>$onlySpotify,'only_local'=>$onlyLocal,'spotify_total'=>count($spotTracks),'local_total'=>count($localSongs)]);
+    }
+
+    // ── Spotify sync apply ──
+    if($act==='spot_sync_apply'){
+        needAuth();
+        $pl = getActivePl();
+        if(empty($pl['spotify_id'])) jsonOut(['ok'=>false,'error'=>'Esta lista não tem playlist Spotify associada.']);
+        $tok = spotUserToken();
+        if(!$tok) jsonOut(['ok'=>false,'error'=>'auth_required']);
+        $addLocal   = json_decode($_POST['add_local']??'[]',true);   // URIs to add to local
+        $removeLocal= json_decode($_POST['remove_local']??'[]',true); // URIs to remove from local
+        $addSpot    = json_decode($_POST['add_spotify']??'[]',true);  // title|artist pairs to add to Spotify
+        $removeSpot = json_decode($_POST['remove_spotify']??'[]',true); // URIs to remove from Spotify
+        $songs = loadSongs($pl);
+        // Apply to local
+        if($addLocal){
+            $appTok = spotToken();
+            foreach($addLocal as $uri){
+                if(preg_match('/track[\/:]([A-Za-z0-9]{10,})/',$uri,$m)){
+                    $ch=curl_init("https://api.spotify.com/v1/tracks/{$m[1]}");
+                    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $appTok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+                    $d=json_decode(curl_exec($ch),true); curl_close($ch);
+                    if(!empty($d['name'])) $songs[]=['title'=>cleanTitle($d['name']),'artist'=>$d['artists'][0]['name']??'','cifra_url'=>'N/A','cifra_source'=>'cifraclub','duration_ms'=>(int)($d['duration_ms']??0),'spotify_url'=>$d['external_urls']['spotify']??''];
+                }
+            }
+        }
+        if($removeLocal){
+            // Remove by spotify_url or by title|artist key
+            $songs=array_values(array_filter($songs,function($s) use($removeLocal){
+                return !in_array($s['spotify_url']??'',$removeLocal);
+            }));
+        }
+        saveSongs($pl,$songs);
+        // Apply to Spotify
+        if($addSpot){
+            $appTok2 = spotToken();
+            $urisToAdd = [];
+            foreach($addSpot as $ta){
+                [$t,$a] = explode('|',$ta,2);
+                $uri = spotSearchTrack($tok,$t,$a);
+                if($uri) $urisToAdd[]=$uri;
+            }
+            if($urisToAdd) spotAddTracks($tok,$pl['spotify_id'],$urisToAdd);
+        }
+        if($removeSpot) spotRemoveTracks($tok,$pl['spotify_id'],$removeSpot);
+        jsonOut(['ok'=>true,'local_count'=>count($songs)]);
+    }
 }
 
-// ── Render page ──────────────────────────────────────────────────
 $activePl  = getActivePl();
 $playlists = loadPlaylists();
 $plId      = $activePl['id']??'';
@@ -450,6 +739,8 @@ $plSpotUrl   = $activePl['spotify_url']??('https://open.spotify.com/playlist/'.(
 $authed      = isAuthed();
 $locked      = isLocked();
 $hasSpot     = hasSpotCreds();
+$hasSpotUser = hasSpotUserToken();
+$spotOAuthLink = ($hasSpot && !$hasSpotUser) ? spotOAuthUrl() : null;
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -859,6 +1150,23 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     </div>
     <div style="display:flex;gap:7px;align-items:center">
       <span class="saving" id="savingInd">Salvo ✓</span>
+      <button class="btn btn-outline" id="mergePlBtn" title="Merge de listas">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
+        <span class="btn-lbl">Merge</span>
+      </button>
+      <?php if($hasSpot): ?>
+      <button class="btn btn-outline" id="composerBtn" title="Buscar compositores via Spotify">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+        <span class="btn-lbl">Compositores</span>
+      </button>
+      <?php if(!empty($activePl['spotify_id'])): ?>
+      <button class="btn btn-outline" id="syncBtn" title="Sincronizar com Spotify">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+        <span class="btn-lbl">Sync</span>
+      </button>
+      <?php endif; ?>
+      <?php endif; ?>
+
       <button class="btn btn-outline" id="printBtn" title="Imprimir lista" onclick="openPrintModal()">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
         <span class="btn-lbl">Imprimir</span>
@@ -913,7 +1221,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <th style="width:34px"></th>
             <th class="td-num">#</th>
             <th>Título</th>
-            <th>Artista</th>
+            <th>Artista / Compositor</th>
             <th class="td-cifra">Cifra</th>
             <th class="td-spot"></th>
             <th class="td-actions">Ações</th>
@@ -940,7 +1248,12 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             </td>
             <td class="td-num"><?= str_pad($i+1,2,'0',STR_PAD_LEFT) ?></td>
             <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
-            <td class="td-artist"><?= htmlspecialchars($song['artist']) ?></td>
+            <td class="td-artist">
+              <?= htmlspecialchars($song['artist']) ?>
+              <?php if(!empty($song['composer'])): ?>
+                <div style="font-size:.65rem;color:var(--text3);margin-top:1px">✍ <?= htmlspecialchars($song['composer']) ?></div>
+              <?php endif; ?>
+            </td>
             <td class="td-cifra">
               <?php if($cu): ?>
                 <a href="<?= htmlspecialchars($cu) ?>" target="_blank"
@@ -1122,7 +1435,130 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   </div>
 </div>
 
-<!-- Lock modal -->
+<!-- Merge Playlists modal -->
+<div class="modal-overlay" id="mergeModal">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-title">Merge de Listas</div>
+    <div class="modal-sub">Selecciona duas ou mais listas para fundir numa nova setlist.</div>
+    <div class="fg">
+      <label class="fl">Listas de origem <span style="color:var(--danger)">*</span></label>
+      <div id="mergePlList" style="display:flex;flex-direction:column;gap:5px;max-height:180px;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--r);padding:8px">
+        <?php foreach($playlists as $p): ?>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem">
+          <input type="checkbox" class="merge-pl-check" value="<?= htmlspecialchars($p['id'],ENT_QUOTES) ?>" style="accent-color:var(--accent)">
+          <span><?= htmlspecialchars($p['name']) ?></span>
+          <span style="color:var(--text3);font-size:.68rem;font-family:'DM Mono',monospace"><?= count(loadSongs($p)) ?> músicas</span>
+        </label>
+        <?php endforeach; ?>
+      </div>
+    </div>
+    <div class="fg">
+      <label class="fl">Nome da nova lista <span style="color:var(--danger)">*</span></label>
+      <input class="fi" type="text" id="mergeNewName" placeholder="Ex: Setlist Verão 2025">
+    </div>
+    <div id="mergeError" class="alert alert-err" style="display:none"></div>
+    <div id="mergeResult" class="alert alert-ok" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('mergeModal')">Cancelar</button>
+      <button class="btn btn-primary" id="mergeDoBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
+        Criar Merge
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Composer modal -->
+<div class="modal-overlay" id="composerModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">Buscar Compositores</div>
+    <div class="modal-sub">Usa os metadados do Spotify para preencher o campo de compositor nas músicas desta lista.</div>
+    <?php if(!$hasSpot): ?>
+    <div class="alert alert-err">Credenciais Spotify não configuradas no <code style="font-family:'DM Mono',monospace">.env</code>.</div>
+    <?php else: ?>
+    <div style="font-size:.78rem;color:var(--text2);margin-bottom:12px;line-height:1.5">
+      O Spotify indica os artistas creditados em cada faixa. Para artistas/compositores solo isto equivale ao compositor. Músicas que já têm compositor definido serão ignoradas.
+    </div>
+    <div id="composerProgress" style="display:none">
+      <div style="font-family:'DM Mono',monospace;font-size:.7rem;color:var(--text3);margin-bottom:6px" id="composerProgressTxt">A processar…</div>
+      <div style="height:4px;background:var(--border2);border-radius:2px;overflow:hidden"><div id="composerProgressBar" style="height:100%;background:var(--accent);width:0%;transition:width .3s"></div></div>
+    </div>
+    <div id="composerResult" class="alert alert-ok" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('composerModal')">Fechar</button>
+      <button class="btn btn-primary" id="composerDoBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Buscar Todos
+      </button>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<!-- Sync with Spotify modal -->
+<div class="modal-overlay" id="syncModal">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title">Sincronizar com Spotify</div>
+    <div class="modal-sub" id="syncModalSub">Compara a lista local com a playlist do Spotify e aplica as diferenças.</div>
+    <?php if(!$hasSpot): ?>
+    <div class="alert alert-err">Credenciais Spotify não configuradas.</div>
+    <?php elseif(!$hasSpotUser): ?>
+    <div style="text-align:center;padding:16px 0">
+      <div style="font-size:.82rem;color:var(--text2);margin-bottom:14px">Para sincronizar é necessário autenticar com a tua conta Spotify (permissão de escrita na playlist).</div>
+      <?php if($spotOAuthLink): ?>
+      <a href="<?= htmlspecialchars($spotOAuthLink) ?>" class="btn btn-primary" style="display:inline-flex">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
+        Ligar conta Spotify
+      </a>
+      <?php endif; ?>
+    </div>
+    <?php else: ?>
+    <div style="font-size:.72rem;color:var(--text3);display:flex;align-items:center;gap:6px;margin-bottom:12px">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px;color:var(--accent)"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
+      Conta Spotify ligada &nbsp;·&nbsp; <a href="?pl=<?= urlencode($plId) ?>&spot_logout=1" style="color:var(--text3);text-decoration:none">desligar</a>
+    </div>
+    <div id="syncLoadingWrap" style="text-align:center;padding:18px 0;display:none">
+      <div style="font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text3)">A analisar diferenças…</div>
+    </div>
+    <div id="syncDiffWrap" style="display:none">
+      <div id="syncStats" style="font-family:'DM Mono',monospace;font-size:.68rem;color:var(--text3);margin-bottom:10px"></div>
+      <!-- Only in Spotify -->
+      <div id="syncOnlySpotWrap">
+        <div style="font-size:.76rem;font-weight:600;color:var(--accent);margin-bottom:6px">📥 Apenas no Spotify (não estão na lista local)</div>
+        <div id="syncOnlySpotList" style="max-height:140px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.75rem;color:var(--text2)">
+            <input type="checkbox" id="syncAddLocalAll" style="accent-color:var(--accent)"> Adicionar todas à lista local
+          </label>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+      <!-- Only in local -->
+      <div id="syncOnlyLocalWrap">
+        <div style="font-size:.76rem;font-weight:600;color:#f0a050;margin-bottom:6px">📤 Apenas na lista local (não estão no Spotify)</div>
+        <div id="syncOnlyLocalList" style="max-height:140px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.75rem;color:var(--text2)">
+            <input type="checkbox" id="syncAddSpotAll" style="accent-color:var(--accent)"> Adicionar todas ao Spotify
+          </label>
+        </div>
+      </div>
+      <div id="syncNoChanges" style="display:none;text-align:center;padding:16px 0;font-size:.82rem;color:var(--text3)">✓ Lista local e Spotify estão sincronizados!</div>
+    </div>
+    <div id="syncResult" class="alert alert-ok" style="display:none;margin-top:10px"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('syncModal')">Fechar</button>
+      <button class="btn btn-outline" id="syncAnalyseBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Analisar
+      </button>
+      <button class="btn btn-primary" id="syncApplyBtn" style="display:none">Aplicar Selecção</button>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+
 <div class="modal-overlay" id="lockModal">
   <div class="modal" style="max-width:340px;text-align:center">
     <div style="color:var(--accent);margin-bottom:10px">
@@ -1643,6 +2079,261 @@ function doPrint() {
     setTimeout(function(){ $('body').removeClass('print-1page print-2page'); }, 500);
   }, 200);
 }
+
+var HAS_SPOT_USER = <?= $hasSpotUser?'true':'false' ?>;
+var ALL_PLS = <?= json_encode(array_map(function($p){ return ['id'=>$p['id'],'name'=>$p['name']]; }, $playlists), JSON_UNESCAPED_UNICODE) ?>;
+
+// ── CSS for sync diff rows ─────────────────────────────────────
+(function(){
+  var s=document.createElement('style');
+  s.textContent=
+    '.sync-row{display:flex;align-items:center;gap:7px;padding:4px 7px;border-radius:5px;background:var(--bg3);transition:background .15s}'
+   +'.sync-row:hover{background:var(--border)}'
+   +'.sync-row label{flex:1;display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.78rem}'
+   +'.sync-row .sr-title{font-weight:500;color:var(--text)}'
+   +'.sync-row .sr-artist{color:var(--text3);font-size:.68rem}'
+   +'.composer-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--border);font-size:.76rem}'
+   +'.composer-row:last-child{border-bottom:none}'
+  ;
+  document.head.appendChild(s);
+})();
+
+// ── Merge playlists ────────────────────────────────────────────
+$('#mergePlBtn').on('click', function(){
+  guardedAction(function(){
+    $('#mergeNewName').val('');
+    $('.merge-pl-check').prop('checked',false);
+    $('#mergeError,#mergeResult').hide();
+    openModal('mergeModal');
+    setTimeout(function(){ $('#mergeNewName').focus(); }, 80);
+  });
+});
+
+$('#mergeDoBtn').on('click', function(){
+  var ids = $('.merge-pl-check:checked').map(function(){ return $(this).val(); }).get();
+  var name = $('#mergeNewName').val().trim();
+  if(ids.length < 2){ $('#mergeError').text('Selecciona pelo menos 2 listas.').show(); return; }
+  if(!name){ $('#mergeError').text('Define um nome para a nova lista.').show(); return; }
+  $('#mergeError').hide();
+  var btn = $(this);
+  btn.prop('disabled',true).text('A criar…');
+  $.post('?pl='+PL_ID, {_action:'merge_playlists', source_ids:JSON.stringify(ids), name:name, pl:PL_ID}, function(r){
+    btn.prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg> Criar Merge');
+    if(r.ok){
+      $('#mergeResult').text('Lista "'+r.name+'" criada com '+r.count+' músicas!').show();
+      setTimeout(function(){ window.location.href='?pl='+encodeURIComponent(r.id); }, 1200);
+    } else {
+      $('#mergeError').text(r.error||'Erro ao criar merge.').show();
+    }
+  }, 'json').fail(function(){ btn.prop('disabled',false); $('#mergeError').text('Erro de rede.').show(); });
+});
+
+// ── Composer fetch ─────────────────────────────────────────────
+$('#composerBtn').on('click', function(){
+  guardedAction(function(){
+    $('#composerProgress').hide();
+    $('#composerResult').hide();
+    $('#composerDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Buscar Todos');
+    openModal('composerModal');
+  });
+});
+
+$('#composerDoBtn').on('click', function(){
+  var btn = $(this);
+  btn.prop('disabled',true).text('A processar…');
+  $('#composerProgress').show();
+  $('#composerProgressBar').css('width','0%');
+  $('#composerProgressTxt').text('A processar…');
+  $('#composerResult').hide();
+
+  $.post('?pl='+PL_ID, {_action:'fetch_all_composers', pl:PL_ID}, function(r){
+    btn.prop('disabled',false).text('Buscar Todos');
+    $('#composerProgress').hide();
+    if(r.ok){
+      // Update SONGS and DOM
+      if(r.songs){
+        r.songs.forEach(function(s,i){
+          if(s.composer){
+            SONGS[i] = SONGS[i]||{};
+            SONGS[i].composer = s.composer;
+            var row = $('#songList tr[data-i="'+i+'"]');
+            var artistCell = row.find('.td-artist');
+            if(artistCell.length){
+              var existing = artistCell.find('.composer-hint');
+              if(!existing.length){
+                artistCell.append('<div class="composer-hint" style="font-size:.65rem;color:var(--text3);margin-top:1px">✍ '+escH(s.composer)+'</div>');
+              } else {
+                existing.text('✍ '+s.composer);
+              }
+            }
+          }
+        });
+      }
+      var msg = r.updated > 0
+        ? '✓ '+r.updated+' música'+(r.updated===1?'':'s')+' com compositor actualizado.'
+        : 'Nenhuma música nova para actualizar (todas já têm compositor ou não foram encontradas).';
+      $('#composerResult').text(msg).show();
+    } else {
+      $('#composerResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro').show();
+      setTimeout(function(){ $('#composerResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
+    }
+  }, 'json').fail(function(){
+    btn.prop('disabled',false);
+    $('#composerProgress').hide();
+    $('#composerResult').removeClass('alert-ok').addClass('alert-err').text('Erro de rede.').show();
+    setTimeout(function(){ $('#composerResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
+  });
+});
+
+// ── Sync with Spotify ──────────────────────────────────────────
+var _syncDiff = null;
+
+$('#syncBtn').on('click', function(){
+  guardedAction(function(){
+    _syncDiff = null;
+    $('#syncDiffWrap,#syncResult,#syncLoadingWrap').hide();
+    $('#syncApplyBtn').hide();
+    openModal('syncModal');
+  });
+});
+
+$('#syncAnalyseBtn').on('click', function(){
+  $('#syncLoadingWrap').show();
+  $('#syncDiffWrap,#syncResult').hide();
+  $('#syncApplyBtn').hide();
+  var btn = $(this);
+  btn.prop('disabled',true);
+
+  $.post('?pl='+PL_ID, {_action:'spot_diff', pl:PL_ID}, function(r){
+    btn.prop('disabled',false);
+    $('#syncLoadingWrap').hide();
+    if(!r.ok){
+      if(r.error==='auth_required'){
+        $('#syncResult').removeClass('alert-ok').addClass('alert-err')
+          .text('Necessário ligar conta Spotify primeiro. Recarrega a página e clica em "Ligar conta Spotify".').show();
+        setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 5000);
+      } else {
+        $('#syncResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro').show();
+        setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 5000);
+      }
+      return;
+    }
+    _syncDiff = r;
+    renderSyncDiff(r);
+  }, 'json').fail(function(){
+    btn.prop('disabled',false);
+    $('#syncLoadingWrap').hide();
+    $('#syncResult').removeClass('alert-ok').addClass('alert-err').text('Erro de rede.').show();
+    setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
+  });
+});
+
+function renderSyncDiff(r){
+  var onlySpot = r.only_spotify||[];
+  var onlyLocal = r.only_local||[];
+
+  $('#syncStats').text('Spotify: '+r.spotify_total+' músicas · Local: '+r.local_total+' músicas · Diferenças: '+(onlySpot.length+onlyLocal.length));
+
+  // Only Spotify section
+  var spotList = $('#syncOnlySpotList').empty();
+  if(onlySpot.length){
+    $('#syncOnlySpotWrap').show();
+    onlySpot.forEach(function(t, i){
+      var id = 'cbs_'+i;
+      var row = $('<div class="sync-row">'
+        +'<label for="'+id+'">'
+        +'<input type="checkbox" id="'+id+'" class="sync-add-local" data-uri="'+escH(t.uri)+'" style="accent-color:var(--accent)" checked>'
+        +'<span><span class="sr-title">'+escH(t.name)+'</span> <span class="sr-artist">— '+escH(t.artist)+'</span></span>'
+        +'</label>'
+        +'</div>');
+      spotList.append(row);
+    });
+  } else {
+    $('#syncOnlySpotWrap').hide();
+  }
+
+  // Only local section
+  var localList = $('#syncOnlyLocalList').empty();
+  if(onlyLocal.length){
+    $('#syncOnlyLocalWrap').show();
+    onlyLocal.forEach(function(s, i){
+      var id = 'cbl_'+i;
+      var key = s.title+'|'+s.artist;
+      var row = $('<div class="sync-row">'
+        +'<label for="'+id+'">'
+        +'<input type="checkbox" id="'+id+'" class="sync-add-spot" data-key="'+escH(key)+'" style="accent-color:var(--accent)" checked>'
+        +'<span><span class="sr-title">'+escH(s.title)+'</span> <span class="sr-artist">— '+escH(s.artist)+'</span></span>'
+        +'</label>'
+        +'</div>');
+      localList.append(row);
+    });
+  } else {
+    $('#syncOnlyLocalWrap').hide();
+  }
+
+  if(!onlySpot.length && !onlyLocal.length){
+    $('#syncNoChanges').show();
+    $('#syncOnlySpotWrap,#syncOnlyLocalWrap').hide();
+  } else {
+    $('#syncNoChanges').hide();
+    $('#syncApplyBtn').show();
+  }
+  $('#syncDiffWrap').show();
+}
+
+// Select-all checkboxes
+$('#syncAddLocalAll').on('change', function(){
+  $('.sync-add-local').prop('checked', $(this).is(':checked'));
+});
+$('#syncAddSpotAll').on('change', function(){
+  $('.sync-add-spot').prop('checked', $(this).is(':checked'));
+});
+
+$('#syncApplyBtn').on('click', function(){
+  // Collect selections
+  var addLocal = [];
+  $('.sync-add-local:checked').each(function(){ addLocal.push($(this).data('uri')); });
+
+  var addSpotify = [];
+  $('.sync-add-spot:checked').each(function(){ addSpotify.push($(this).data('key')); });
+
+  if(!addLocal.length && !addSpotify.length){
+    toast('Nenhuma opção seleccionada.');
+    return;
+  }
+
+  // Confirmation
+  var msgs = [];
+  if(addLocal.length) msgs.push('Adicionar '+addLocal.length+' música(s) à lista local');
+  if(addSpotify.length) msgs.push('Adicionar '+addSpotify.length+' música(s) ao Spotify');
+  if(!confirm('Confirmas as seguintes alterações?\n\n• '+msgs.join('\n• '))) return;
+
+  var btn = $(this);
+  btn.prop('disabled',true).text('A sincronizar…');
+
+  $.post('?pl='+PL_ID, {
+    _action:'spot_sync_apply',
+    pl:PL_ID,
+    add_local:JSON.stringify(addLocal),
+    remove_local:JSON.stringify([]),
+    add_spotify:JSON.stringify(addSpotify),
+    remove_spotify:JSON.stringify([])
+  }, function(r){
+    btn.prop('disabled',false).text('Aplicar Selecção');
+    if(r.ok){
+      $('#syncResult').text('✓ Sincronização aplicada com sucesso! Lista local: '+r.local_count+' músicas.').show();
+      $('#syncApplyBtn').hide();
+      setTimeout(function(){ window.location.reload(); }, 1800);
+    } else {
+      $('#syncResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro ao sincronizar.').show();
+      setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 5000);
+    }
+  }, 'json').fail(function(){
+    btn.prop('disabled',false).text('Aplicar Selecção');
+    $('#syncResult').removeClass('alert-ok').addClass('alert-err').text('Erro de rede.').show();
+    setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
+  });
+});
 
 // ── Utility ────────────────────────────────────────────────────
 function escH(s){ return $('<span>').text(s).html(); }
