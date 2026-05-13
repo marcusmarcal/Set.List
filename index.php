@@ -90,6 +90,38 @@ function cleanTitle($t) {
     return trim($t);
 }
 
+function toSlugPHP($s) {
+    $s = mb_strtolower($s, 'UTF-8');
+    $map = ['á'=>'a','à'=>'a','ã'=>'a','â'=>'a','ä'=>'a',
+            'é'=>'e','ê'=>'e','ë'=>'e','è'=>'e',
+            'í'=>'i','î'=>'i','ï'=>'i','ì'=>'i',
+            'ó'=>'o','ô'=>'o','õ'=>'o','ö'=>'o','ò'=>'o',
+            'ú'=>'u','û'=>'u','ü'=>'u','ù'=>'u',
+            'ç'=>'c','ñ'=>'n','ý'=>'y'];
+    $s = strtr($s, $map);
+    $s = preg_replace('/[^a-z0-9\s-]/', '', $s);
+    $s = preg_replace('/[\s_]+/', '-', trim($s));
+    return trim(preg_replace('/-+/', '-', $s), '-');
+}
+
+function cifraUrlAuto($song) {
+    $u = $song['cifra_url'] ?? ''; $s = $song['cifra_source'] ?? 'cifraclub';
+    // Has a real saved URL — use it
+    if ($u && $u !== 'N/A') {
+        if (preg_match('/^https?:\/\//', $u)) return $u;
+        if ($s === 'ultimate_guitar') return 'https://tabs.ultimate-guitar.com/'.ltrim($u,'/');
+        return 'https://www.cifraclub.com.br/'.ltrim($u,'/');
+    }
+    // Only auto-generate for cifraclub source (or unset)
+    if ($s && $s !== 'cifraclub') return null;
+    $artist = $song['artist'] ?? ''; $title = $song['title'] ?? '';
+    if (!$artist || !$title) return null;
+    $aSlug = toSlugPHP($artist);
+    $tSlug = toSlugPHP($title);
+    if (!$aSlug || !$tSlug) return null;
+    return "https://www.cifraclub.com.br/{$aSlug}/{$tSlug}/";
+}
+
 function cifraUrl($song) {
     $u = $song['cifra_url'] ?? ''; $s = $song['cifra_source'] ?? '';
     if (!$u || $u==='N/A') return null;
@@ -217,38 +249,7 @@ if(isset($_GET['spot_lookup'])){
     jsonOut(['ok'=>true,'name'=>$info['name'],'url'=>$info['url']]);
 }
 
-// Cifra search on Cifraclub
-if(isset($_GET['cifra_search'])){
-    $title  = trim($_GET['title']??'');
-    $artist = trim($_GET['artist']??'');
-    if(!$title||!$artist) jsonOut(['ok'=>false,'error'=>'Missing params']);
-    $q   = urlencode($artist.' '.$title);
-    $url = 'https://www.cifraclub.com.br/busca/?q='.$q;
-    $ch  = curl_init($url);
-    curl_setopt_array($ch,[
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT        => 10,
-        CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; SetList/1.0)',
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false,
-    ]);
-    $html = curl_exec($ch); curl_close($ch);
-    // Try to find first song result link like /artist/song/
-    if($html && preg_match_all('#href="(https://www\.cifraclub\.com\.br/[a-z0-9\-]+/[a-z0-9\-]+/)"#i',$html,$m)){
-        // Filter out non-song pages (search, category pages)
-        $candidates = array_unique($m[1]);
-        $hit = null;
-        foreach($candidates as $c){
-            // Must have 2 path segments after domain (artist/song)
-            $path = parse_url($c,PHP_URL_PATH);
-            $segs = array_filter(explode('/',$path));
-            if(count($segs)===2){ $hit=$c; break; }
-        }
-        if($hit) jsonOut(['ok'=>true,'url'=>$hit]);
-    }
-    jsonOut(['ok'=>false,'error'=>'Não encontrada']);
-}
+// Cifra search — build slug URL and verify it exists
 if(isset($_GET['spot_debug'])){
     header('Content-Type: application/json');
     [$cid,$csec]=spotCreds();
@@ -920,9 +921,11 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         </thead>
         <tbody id="songList">
           <?php foreach($songs as $i=>$song):
-            $cu  = cifraUrl($song); $cl = cifraLabel($song);
+            $cu  = cifraUrlAuto($song);   // generated or saved URL
+            $cl  = cifraLabel($song);
             $cr  = $song['cifra_url']??''; $cs=detectSrc($cr);
             $su  = $song['spotify_url']??'';
+            $isAuto = (!$cr || $cr==='N/A') && $cu;  // true = slug-generated, not manually saved
           ?>
           <tr data-i="<?= $i ?>"
               data-title="<?= htmlspecialchars($song['title'],ENT_QUOTES) ?>"
@@ -940,7 +943,11 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <td class="td-artist"><?= htmlspecialchars($song['artist']) ?></td>
             <td class="td-cifra">
               <?php if($cu): ?>
-                <a href="<?= htmlspecialchars($cu) ?>" target="_blank" class="badge badge-green" style="text-decoration:none"><?= $cl ?></a>
+                <a href="<?= htmlspecialchars($cu) ?>" target="_blank"
+                   class="badge <?= $isAuto?'badge-gray':'badge-green' ?>"
+                   style="text-decoration:none"
+                   title="<?= $isAuto?'URL gerada automaticamente — pode não existir':'Cifra salva' ?>"
+                ><?= $cl ?></a>
               <?php else: ?>
                 <span class="badge badge-gray">—</span>
               <?php endif; ?>
@@ -1313,6 +1320,7 @@ function openSongModal(mode, idx) {
     $('#songModalTitle').text('Adicionar Música');
     $('#songModalSub').text('');
     $('#smTitle,#smArtist,#smCifraUrl').val('');
+    $('#smCifraHint').html('');
     setSrc('cifraclub');
     $('#songModalMode').val('add'); $('#songModalIdx').val('');
     $('#smSaveBtn').text('Adicionar');
@@ -1321,32 +1329,75 @@ function openSongModal(mode, idx) {
     $('#songModalTitle').text('Editar Música');
     $('#songModalSub').text('#'+String(idx+1).padStart(2,'0'));
     $('#smTitle').val(s.title); $('#smArtist').val(s.artist);
-    var hasCifra = s.cifra_url && s.cifra_url!=='N/A' && s.cifra_url!=='';
-    var cu = hasCifra ? s.cifra_url : '';
-    $('#smCifraUrl').val(cu);
+    var hasManual = s.cifra_url && s.cifra_url!=='N/A' && s.cifra_url!=='';
     setSrc(s.cifra_source||'cifraclub');
+    if(hasManual){
+      $('#smCifraUrl').val(s.cifra_url);
+      $('#smCifraHint').html('Cifra salva manualmente.');
+    } else {
+      // Pre-fill with generated slug URL
+      var urls = buildCifraUrl(s.artist, s.title);
+      $('#smCifraUrl').val(urls[0]||'');
+      $('#smCifraHint').html(urls[0]
+        ? 'URL gerada por slug — <a href="'+urls[0]+'" target="_blank" style="color:var(--accent)">verifica se existe ↗</a>. Edita se necessário.'
+        : '');
+    }
     $('#songModalMode').val('edit'); $('#songModalIdx').val(idx);
     $('#smSaveBtn').text('Salvar');
-    // Auto-search cifra if not saved and source is cifraclub
-    if(!hasCifra && (s.cifra_source||'cifraclub')==='cifraclub'){
-      searchCifraAuto(s.title, s.artist);
-    }
   }
   openModal('songModal');
   setTimeout(function(){ $('#smTitle').focus(); }, 80);
 }
 
-// ── Cifra auto-search ──────────────────────────────────────────
+// ── Cifra auto-search (client-side slug builder) ───────────────
+function toSlugJS(s){
+  var map = {
+    'á':'a','à':'a','ã':'a','â':'a','ä':'a',
+    'é':'e','ê':'e','ë':'e','è':'e',
+    'í':'i','î':'i','ï':'i','ì':'i',
+    'ó':'o','ô':'o','õ':'o','ö':'o','ò':'o',
+    'ú':'u','û':'u','ü':'u','ù':'u',
+    'ç':'c','ñ':'n','ý':'y'
+  };
+  s = s.toLowerCase();
+  s = s.replace(/[áàãâäéêëèíîïìóôõöòúûüùçñý]/g, function(c){ return map[c]||c; });
+  s = s.replace(/[^a-z0-9\s-]/g, '');
+  s = s.replace(/[\s_]+/g, '-').trim();
+  s = s.replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return s;
+}
+
+function buildCifraUrl(artist, title){
+  var candidates = [];
+  var a = artist, t = toSlugJS(title);
+
+  // Primary
+  candidates.push(toSlugJS(a));
+  // Without "The " prefix
+  candidates.push(toSlugJS(a.replace(/^the\s+/i,'')));
+  // Without "& Something" / "e Something" suffix
+  candidates.push(toSlugJS(a.replace(/\s*[&e]\s+.*/i,'')));
+  // Deduplicate
+  candidates = candidates.filter(function(v,i,arr){ return v && arr.indexOf(v)===i; });
+
+  return candidates.map(function(aSlug){
+    return 'https://www.cifraclub.com.br/'+aSlug+'/'+t+'/';
+  });
+}
+
 function searchCifraAuto(title, artist){
-  $('#smCifraHint').html('<span style="display:inline-block;animation:spin 1s linear infinite">⟳</span> A buscar cifra…');
-  $.get(location.pathname, {cifra_search:1, title:title, artist:artist}, function(r){
-    if(r.ok && r.url){
-      $('#smCifraUrl').val(r.url);
-      $('#smCifraHint').html('✓ Cifra encontrada automaticamente. Verifica antes de salvar.');
-    } else {
-      $('#smCifraHint').html('Cifra não encontrada — podes inserir manualmente.');
-    }
-  },'json').fail(function(){ $('#smCifraHint').html(''); });
+  var urls = buildCifraUrl(artist, title);
+  var primary = urls[0];
+  // Show the best-guess URL immediately as a clickable suggestion
+  $('#smCifraUrl').val(primary);
+  $('#smCifraHint').html(
+    'URL gerada automaticamente — <a href="'+primary+'" target="_blank" style="color:var(--accent)">verifica se existe ↗</a>. '
+    + (urls.length > 1 ? 'Alternativas: '
+        + urls.slice(1).map(function(u){
+            return '<a href="'+u+'" target="_blank" style="color:var(--text2);font-size:.65rem">↗</a>';
+          }).join(' ')
+      : '')
+  );
 }
 
 $('#addSongBtn').on('click', function(){ guardedAction(function(){ openSongModal('add'); }); });
