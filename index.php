@@ -964,6 +964,18 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .fade-up{animation:fadeUp .3s ease forwards}
 
 /* ── MOBILE ── */
+/* ── Mobile action menu (overflow buttons) ── */
+.topbar-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.tb-more-btn{display:none}
+.tb-overflow-menu{
+  display:none;position:absolute;top:calc(100% + 6px);right:13px;
+  background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);
+  padding:6px;z-index:300;min-width:170px;
+  box-shadow:0 8px 32px rgba(0,0,0,.5);
+}
+.tb-overflow-menu.open{display:flex;flex-direction:column;gap:3px}
+.tb-overflow-menu .btn{justify-content:flex-start;width:100%;font-size:.78rem;padding:7px 10px}
+
 @media(max-width:700px){
   :root{--sw:0px}
   .sidebar{transform:translateX(-230px);width:230px;box-shadow:4px 0 24px rgba(0,0,0,.5)}
@@ -971,7 +983,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .sb-backdrop.open{display:block}
   .hamburger{display:flex}
   .main{margin-left:0}
-  .topbar{padding:10px 13px}
+  .topbar{padding:10px 13px;position:relative}
   .tb-title{font-size:.95rem}
   .tb-sub{display:none}
   .content{padding:13px 11px}
@@ -986,7 +998,24 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .td-actions{width:60px}
   .btn-ghost,.btn-danger{padding:3px 5px}
   .btn-ghost .btn-lbl,.btn-danger .btn-lbl{display:none}
+  /* Hide all topbar secondary buttons — show only Add and overflow trigger */
+  .topbar #mergePlBtn,
+  .topbar #composerBtn,
+  .topbar #syncBtn,
+  .topbar #printBtn,
+  .topbar #copyListBtn{display:none}
   .topbar .btn-primary .btn-lbl{display:none}
+  .tb-more-btn{display:inline-flex}
+  /* Modal full-screen on mobile */
+  .modal-overlay{align-items:flex-end;padding:0}
+  .modal{
+    border-radius:var(--r2) var(--r2) 0 0;
+    max-width:100%!important;
+    width:100%;
+    max-height:88vh;
+    overflow-y:auto;
+    padding:20px 16px 28px;
+  }
 }
 
 @media print{
@@ -1148,25 +1177,26 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         </div>
       </div>
     </div>
-    <div style="display:flex;gap:7px;align-items:center">
+    <div class="topbar-actions">
       <span class="saving" id="savingInd">Salvo ✓</span>
+
+      <!-- Desktop: all buttons visible -->
       <button class="btn btn-outline" id="mergePlBtn" title="Merge de listas">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
         <span class="btn-lbl">Merge</span>
       </button>
       <?php if($hasSpot): ?>
       <button class="btn btn-outline" id="composerBtn" title="Buscar compositores via Spotify">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
         <span class="btn-lbl">Compositores</span>
       </button>
       <?php if(!empty($activePl['spotify_id'])): ?>
       <button class="btn btn-outline" id="syncBtn" title="Sincronizar com Spotify">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
         <span class="btn-lbl">Sync</span>
       </button>
       <?php endif; ?>
       <?php endif; ?>
-
       <button class="btn btn-outline" id="printBtn" title="Imprimir lista" onclick="openPrintModal()">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
         <span class="btn-lbl">Imprimir</span>
@@ -1175,6 +1205,40 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         <span class="btn-lbl">Copiar</span>
       </button>
+
+      <!-- Mobile: "⋯" overflow trigger -->
+      <button class="btn btn-outline tb-more-btn" id="tbMoreBtn" title="Mais opções">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+      </button>
+
+      <!-- Mobile overflow dropdown -->
+      <div class="tb-overflow-menu" id="tbOverflowMenu">
+        <button class="btn btn-outline" id="mergePlBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
+          Merge de Listas
+        </button>
+        <?php if($hasSpot): ?>
+        <button class="btn btn-outline" id="composerBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+          Compositores
+        </button>
+        <?php if(!empty($activePl['spotify_id'])): ?>
+        <button class="btn btn-outline" id="syncBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+          Sync Spotify
+        </button>
+        <?php endif; ?>
+        <?php endif; ?>
+        <button class="btn btn-outline" id="printBtnM" onclick="closeOverflow();openPrintModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          Imprimir
+        </button>
+        <button class="btn btn-outline" id="copyListBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copiar Lista
+        </button>
+      </div>
+
       <button class="btn btn-primary" id="addSongBtn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span class="btn-lbl">Adicionar</span>
@@ -2334,6 +2398,21 @@ $('#syncApplyBtn').on('click', function(){
     setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
   });
 });
+
+// ── Mobile overflow menu ───────────────────────────────────────
+function closeOverflow(){ $('#tbOverflowMenu').removeClass('open'); }
+$('#tbMoreBtn').on('click', function(e){
+  e.stopPropagation();
+  $('#tbOverflowMenu').toggleClass('open');
+});
+$(document).on('click', function(e){
+  if(!$(e.target).closest('#tbOverflowMenu,#tbMoreBtn').length) closeOverflow();
+});
+// Mirror mobile buttons to their desktop counterparts
+$('#mergePlBtnM').on('click', function(){ closeOverflow(); $('#mergePlBtn').trigger('click'); });
+$('#composerBtnM').on('click', function(){ closeOverflow(); $('#composerBtn').trigger('click'); });
+$('#syncBtnM').on('click', function(){ closeOverflow(); $('#syncBtn').trigger('click'); });
+$('#copyListBtnM').on('click', function(){ closeOverflow(); $('#copyListBtn').trigger('click'); });
 
 // ── Utility ────────────────────────────────────────────────────
 function escH(s){ return $('<span>').text(s).html(); }
