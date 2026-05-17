@@ -31,6 +31,15 @@ function isAuthed()  { return !isLocked() || !empty($_SESSION['sl_authed']); }
 // ── Playlists ────────────────────────────────────────────────────
 $PLF = __DIR__ . '/playlists.json';
 
+function newPlId() {
+    // Numeric timestamp-based ID, guaranteed unique
+    $id = (string)time();
+    $pls = loadPlaylists();
+    $exist = array_column($pls, 'id');
+    while(in_array($id, $exist)) $id = (string)((int)$id + 1);
+    return $id;
+}
+
 function loadPlaylists() {
     global $PLF;
     if (!file_exists($PLF)) {
@@ -38,12 +47,15 @@ function loadPlaylists() {
             'id'=>'principal','name'=>'Marcvs Marcal',
             'spotify_id'=>'4pcomesNQA6DPXj1HFpOjf','is_default'=>true
         ]];
-        file_put_contents($PLF, json_encode($d, JSON_PRETTY_PRINT));
+        file_put_contents($PLF, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
         return $d;
     }
     return json_decode(file_get_contents($PLF), true) ?: [];
 }
-function savePlaylists($d) { global $PLF; file_put_contents($PLF, json_encode($d, JSON_PRETTY_PRINT)); }
+function savePlaylists($d) {
+    global $PLF;
+    file_put_contents($PLF, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+}
 
 function getActivePl() {
     $pls = loadPlaylists();
@@ -54,7 +66,13 @@ function getActivePl() {
 }
 
 function songsFile($pl) {
-    $id = preg_replace('/[^a-z0-9_-]/i','', $pl['id']);
+    // For new numeric IDs: just digits, safe as-is.
+    // For legacy slug IDs: keep only safe filesystem chars.
+    // Use raw id if it only contains safe chars, otherwise sanitise.
+    $id = $pl['id'];
+    if (!preg_match('/^[a-z0-9_\-]+$/i', $id)) {
+        $id = preg_replace('/[^a-z0-9_\-]/i', '', $id);
+    }
     return __DIR__ . "/songs_{$id}.json";
 }
 function loadSongs($pl) {
@@ -63,14 +81,18 @@ function loadSongs($pl) {
         $leg = __DIR__ . '/songs.json';
         if (!empty($pl['is_default']) && file_exists($leg)) {
             $d = json_decode(file_get_contents($leg), true) ?: [];
-            file_put_contents($f, json_encode($d, JSON_PRETTY_PRINT));
+            file_put_contents($f, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
             return $d;
         }
         return [];
     }
-    return json_decode(file_get_contents($f), true) ?: [];
+    $raw = file_get_contents($f);
+    $d   = json_decode($raw, true);
+    return is_array($d) ? $d : [];
 }
-function saveSongs($pl, $d) { file_put_contents(songsFile($pl), json_encode($d, JSON_PRETTY_PRINT)); }
+function saveSongs($pl, $d) {
+    file_put_contents(songsFile($pl), json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+}
 
 function sortSongs($songs, $col, $ord='asc') {
     usort($songs, function($a,$b) use($col,$ord) {
@@ -359,8 +381,53 @@ function spotFetchComposer($tok,$title,$artist) {
     return implode(', ',$composers);
 }
 
+// ── Title normalisation for fuzzy matching ───────────────────────
+// Strips remaster/live/edition/year suffixes so "Stand By Me - Remastered 2010"
+// matches "Stand By Me". Also normalises punctuation and accents.
+function normalizeTitle($s) {
+    $s = mb_strtolower($s, 'UTF-8');
+    // Remove parenthetical/bracketed suffixes that indicate versions
+    // Patterns: (Remastered 2010), [Live], (Single Edit), (feat. X), etc.
+    $versionPatterns = [
+        // Remaster variants
+        '/[\(\[\-–—]\s*\d{0,4}\s*digital\s+remaster(?:ed)?\s*\d{0,4}[\)\]]?/u',
+        '/[\(\[\-–—]\s*remaster(?:ed)?\s*(?:version\s*)?\d{0,4}[\)\]]?/u',
+        '/[\(\[\-–—]\s*\d{4}\s*remaster(?:ed)?[\)\]]?/u',
+        '/[\(\[\-–—]\s*\d{4}\s*digital\s+remaster[\)\]]?/u',
+        // Live, single, edit, mix, version
+        '/[\(\[\-–—]\s*(?:live|single\s*edit|radio\s*edit|album\s*version|original\s*(?:mix|version)|(?:\w+\s*)?mix|mono|stereo|(?:\w+\s*)?edit|(?:\w+\s*)?version)[\)\]]?/u',
+        // Featured artists
+        '/[\(\[\-–—]\s*feat(?:uring|\.)?\s+[^\)\]]+[\)\]]?/u',
+        '/\s+ft\.\s+.+$/u',
+        // Bonus / deluxe track
+        '/[\(\[\-–—]\s*(?:bonus|deluxe|extended)[\s\w]*[\)\]]?/u',
+        // Trailing year in parens (2009)
+        '/\s*\(\d{4}\)\s*$/u',
+        // Leftover open parens/brackets
+        '/[\(\[]\s*[\)\]]$/u',
+    ];
+    foreach($versionPatterns as $p) $s = preg_replace($p, '', $s);
+    // Normalise separators and whitespace
+    $s = preg_replace('/[\-–—]+/', ' ', $s);
+    $s = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s);
+    $s = preg_replace('/\s+/', ' ', $s);
+    return trim($s);
+}
+
+function normalizeArtist($s) {
+    $s = mb_strtolower($s, 'UTF-8');
+    // Remove "The " prefix for loose matching (The Beatles ≈ Beatles)
+    $s = preg_replace('/^the\s+/u', '', $s);
+    $s = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s);
+    $s = preg_replace('/\s+/', ' ', $s);
+    return trim($s);
+}
+
+function trackMatchKey($title, $artist) {
+    return normalizeTitle($title).'|||'.normalizeArtist($artist);
+}
+
 function fmtMs($ms) {
-    if(!$ms) return null;
     $s=intdiv($ms,1000);$h=intdiv($s,3600);$s-=$h*3600;$m=intdiv($s,60);
     return $h?sprintf('%dh %02dm',$h,$m):sprintf('%dm',$m);
 }
@@ -371,10 +438,37 @@ function fmtMs($ms) {
 $ajax = $_SERVER['HTTP_X_REQUESTED_WITH']??'' === 'XMLHttpRequest'
      || isset($_POST['_ajax']) || isset($_GET['_ajax']);
 
-function jsonOut($d){ header('Content-Type: application/json'); echo json_encode($d); exit; }
+function jsonOut($d){ header('Content-Type: application/json; charset=utf-8'); echo json_encode($d, JSON_UNESCAPED_UNICODE); exit; }
 function needAuth()  { if(!isAuthed()) jsonOut(['ok'=>false,'error'=>'auth']); }
 
-// ── Spotify OAuth callback ────────────────────────────────────────
+// ── Debug endpoint (remove after fixing) ──
+if(isset($_GET['_debug'])){
+    $pls = loadPlaylists();
+    $info = [];
+    foreach($pls as $p){
+        $f = songsFile($p);
+        $raw = file_exists($f) ? file_get_contents($f) : '';
+        $decoded = json_decode($raw, true);
+        $info[] = [
+            'id'          => $p['id'],
+            'name'        => $p['name'],
+            'file'        => basename($f),
+            'exists'      => file_exists($f),
+            'size'        => strlen($raw),
+            'json_error'  => $decoded === null ? json_last_error_msg() : 'ok',
+            'count'       => is_array($decoded) ? count($decoded) : 0,
+            'sample'      => is_array($decoded) && count($decoded) ? $decoded[0] : null,
+        ];
+    }
+    jsonOut([
+        'dir'          => __DIR__,
+        'dir_writable' => is_writable(__DIR__),
+        'php_version'  => PHP_VERSION,
+        'playlists'    => $info,
+    ]);
+}
+
+
 if (isset($_GET['spot_oauth_cb'])) {
     if (!empty($_GET['code']) && ($_GET['state']??'') === ($_SESSION['spot_oauth_state']??'__')) {
         spotExchangeCode($_GET['code']);
@@ -510,9 +604,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             if(!$info) jsonOut(['ok'=>false,'error'=>'Playlist não encontrada ou privada']);
             $name=$manualName?:$info['name'];
             $pls=loadPlaylists();
-            $slug=trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$name)),'-')?:'playlist';
-            $exist=array_column($pls,'id');$base=$slug;$n=2;
-            while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+            $slug=newPlId();
             $newPl=['id'=>$slug,'name'=>$name,'spotify_id'=>$spotId,
                     'spotify_url'=>$info['url'],'is_default'=>count($pls)===0];
             $pls[]=$newPl; savePlaylists($pls);
@@ -524,9 +616,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             // Without Spotify — name is required
             if(!$manualName) jsonOut(['ok'=>false,'error'=>'O nome é obrigatório.']);
             $pls=loadPlaylists();
-            $slug=trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$manualName)),'-')?:'playlist';
-            $exist=array_column($pls,'id');$base=$slug;$n=2;
-            while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+            $slug=newPlId();
             $newPl=['id'=>$slug,'name'=>$manualName,'spotify_id'=>'','is_default'=>count($pls)===0];
             $pls[]=$newPl; savePlaylists($pls);
             saveSongs($newPl,[]);
@@ -588,8 +678,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $mode=$_POST['mode']??'replace';
         if($mode==='merge'){
             $ex=loadSongs($targetPl);
-            $keys=array_map(function($s){ return strtolower($s['title'].'|'.$s['artist']); },$ex);
-            foreach($tracks as $t) if(!in_array(strtolower($t['title'].'|'.$t['artist']),$keys)) $ex[]=$t;
+            $keys=array_map(function($s){ return trackMatchKey($s['title'],$s['artist']); },$ex);
+            foreach($tracks as $t) if(!in_array(trackMatchKey($t['title'],$t['artist']),$keys)) $ex[]=$t;
             saveSongs($targetPl,$ex); $cnt=count($ex);
         } else { saveSongs($targetPl,$tracks); $cnt=count($tracks); }
         jsonOut(['ok'=>true,'count'=>$cnt,'name'=>$targetPl['name'],'pl_id'=>$tid]);
@@ -601,16 +691,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $newName   = trim($_POST['name']??'');
         if(!$newName||empty($sourceIds)) jsonOut(['ok'=>false,'error'=>'Nome e listas de origem são obrigatórios.']);
         $pls = loadPlaylists();
-        $slug = trim(strtolower(preg_replace('/[^a-z0-9]+/i','-',$newName)),'-')?:'merged';
-        $exist = array_column($pls,'id'); $base=$slug; $n=2;
-        while(in_array($slug,$exist)) $slug=$base.'-'.$n++;
+        $slug = newPlId();
         $newPl = ['id'=>$slug,'name'=>$newName,'spotify_id'=>'','is_default'=>false];
         $merged = []; $seen = [];
         foreach($sourceIds as $sid){
             $srcPl=null; foreach($pls as $p) if($p['id']===$sid){$srcPl=$p;break;}
             if(!$srcPl) continue;
             foreach(loadSongs($srcPl) as $s){
-                $key = strtolower($s['title'].'|'.$s['artist']);
+                $key = trackMatchKey($s['title'],$s['artist']);
                 if(!isset($seen[$key])){ $seen[$key]=true; $merged[]=$s; }
             }
         }
@@ -657,23 +745,34 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(!$tok) jsonOut(['ok'=>false,'error'=>'auth_required']);
         $spotTracks = spotPlaylistTrackUris($tok,$pl['spotify_id']);
         $localSongs = loadSongs($pl);
-        // Build local lookup by title+artist slug
-        $localKeys = [];
-        foreach($localSongs as $s) $localKeys[strtolower($s['title'].'|'.$s['artist'])] = $s;
-        // Find what's on Spotify but not local (only_spotify)
+
+        // Build normalised key maps
+        // Local: normalised_key => song
+        $localKeyMap = [];
+        foreach($localSongs as $s){
+            $k = trackMatchKey($s['title'], $s['artist']);
+            $localKeyMap[$k] = $s;
+        }
+        // Spotify: normalised_key => [uri, name, artist]
+        $spotKeyMap = [];
+        foreach($spotTracks as $uri=>$info){
+            $k = trackMatchKey($info['name'], $info['artist']);
+            $spotKeyMap[$k] = array_merge($info, ['uri'=>$uri]);
+        }
+
+        // Only on Spotify (not matched locally)
         $onlySpotify = [];
         foreach($spotTracks as $uri=>$info){
-            $key = strtolower($info['name'].'|'.$info['artist']);
-            if(!isset($localKeys[$key])) $onlySpotify[]=array_merge($info,['uri'=>$uri]);
+            $k = trackMatchKey($info['name'], $info['artist']);
+            if(!isset($localKeyMap[$k])) $onlySpotify[] = array_merge($info,['uri'=>$uri]);
         }
-        // Find what's local but not on Spotify (only_local) — need to search URIs
+        // Only local (not matched on Spotify)
         $onlyLocal = [];
-        $spotKeyMap = [];
-        foreach($spotTracks as $uri=>$info) $spotKeyMap[strtolower($info['name'].'|'.$info['artist'])]=$uri;
         foreach($localSongs as $s){
-            $key = strtolower($s['title'].'|'.$s['artist']);
-            if(!isset($spotKeyMap[$key])) $onlyLocal[]=$s;
+            $k = trackMatchKey($s['title'], $s['artist']);
+            if(!isset($spotKeyMap[$k])) $onlyLocal[] = $s;
         }
+
         jsonOut(['ok'=>true,'only_spotify'=>$onlySpotify,'only_local'=>$onlyLocal,'spotify_total'=>count($spotTracks),'local_total'=>count($localSongs)]);
     }
 
@@ -721,6 +820,107 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         }
         if($removeSpot) spotRemoveTracks($tok,$pl['spotify_id'],$removeSpot);
         jsonOut(['ok'=>true,'local_count'=>count($songs)]);
+    }
+    // ── Import from plain text ──
+    if($act==='import_text'){
+        needAuth();
+        $rawText  = trim($_POST['text']??'');
+        $newName  = trim($_POST['name']??'');
+        $addToExisting = trim($_POST['target_id']??'');
+        if(!$rawText) jsonOut(['ok'=>false,'error'=>'Texto vazio.']);
+
+        // Ensure UTF-8 (convert if needed)
+        if(function_exists('mb_detect_encoding')){
+            $enc = mb_detect_encoding($rawText, ['UTF-8','ISO-8859-1','Windows-1252'], true);
+            if($enc && $enc !== 'UTF-8') $rawText = mb_convert_encoding($rawText, 'UTF-8', $enc);
+        }
+
+        $lines = preg_split('/\r?\n/',$rawText);
+        $parsed = [];
+        foreach($lines as $line){
+            $line = trim($line);
+            if($line==='') continue;
+            // Strip leading "1." or "1)" or "1 -"
+            $line = preg_replace('/^\d+[\.\)]\s*/u','',$line);
+            // Normalize all dash variants to a plain pipe for splitting:
+            // em dash —, en dash –, double hyphen --, spaced hyphen " - "
+            $line = preg_replace('/\s*[\x{2014}\x{2013}]\s*/u', '|', $line); // em/en dash
+            $line = preg_replace('/\s+--\s+/', '|', $line);                   // double hyphen
+            $line = preg_replace('/\s+-\s+/', '|', $line);                    // spaced hyphen
+            if(substr_count($line,'|') >= 1){
+                $parts = explode('|', $line, 2);
+                $title  = trim($parts[0]);
+                $artist = trim($parts[1]);
+                if($title && $artist) $parsed[] = ['title'=>$title,'artist'=>$artist];
+            }
+        }
+        if(empty($parsed)) jsonOut(['ok'=>false,'error'=>'Nenhuma música reconhecida. Usa o formato "Título — Artista". Reconhecidas: '.count($lines).' linhas.','debug_first'=>$lines[0]??'']);
+
+        if($addToExisting){
+            $pls=loadPlaylists(); $targetPl=null;
+            foreach($pls as $p) if($p['id']===$addToExisting){$targetPl=$p;break;}
+            if(!$targetPl) jsonOut(['ok'=>false,'error'=>'Lista não encontrada.']);
+            $existing = loadSongs($targetPl);
+            $seen=[];
+            foreach($existing as $s) $seen[strtolower($s['title'].'|'.$s['artist'])]=true;
+            $added=0;
+            foreach($parsed as $s){
+                $key=strtolower($s['title'].'|'.$s['artist']);
+                if(!isset($seen[$key])){
+                    $existing[]=['title'=>$s['title'],'artist'=>$s['artist'],'cifra_url'=>'N/A','cifra_source'=>'cifraclub','duration_ms'=>0,'spotify_url'=>''];
+                    $added++; $seen[$key]=true;
+                }
+            }
+            $f = songsFile($targetPl);
+            $wrote = file_put_contents($f, json_encode($existing, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+            jsonOut(['ok'=> $wrote !== false,'id'=>$addToExisting,'name'=>$targetPl['name'],'added'=>$added,'total'=>count($existing)]);
+        } else {
+            if(!$newName) jsonOut(['ok'=>false,'error'=>'Define um nome para a nova lista.']);
+            $pls=loadPlaylists();
+            $slug=newPlId();
+            $songs=array_map(function($s){
+                return ['title'=>$s['title'],'artist'=>$s['artist'],'cifra_url'=>'N/A','cifra_source'=>'cifraclub','duration_ms'=>0,'spotify_url'=>''];
+            },$parsed);
+            $newPl=['id'=>$slug,'name'=>$newName,'spotify_id'=>'','is_default'=>false];
+            $pls[]=$newPl;
+            savePlaylists($pls);
+            $f = songsFile($newPl);
+            $wrote = file_put_contents($f, json_encode($songs, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+            jsonOut(['ok'=> $wrote !== false,'id'=>$slug,'name'=>$newName,'added'=>count($songs),'total'=>count($songs)]);
+        }
+    }
+
+    // ── Create Spotify playlist from local list ──
+    if($act==='create_spot_playlist'){
+        needAuth();
+        $pl = getActivePl();
+        $tok = spotUserToken();
+        if(!$tok) jsonOut(['ok'=>false,'error'=>'auth_required']);
+        $userId = spotUserId($tok);
+        if(!$userId) jsonOut(['ok'=>false,'error'=>'Não foi possível obter o utilizador Spotify.']);
+        $plName = trim($_POST['name']??$pl['name']);
+        $desc   = trim($_POST['desc']??'Criada via SetList');
+        // Create playlist
+        $ch=curl_init("https://api.spotify.com/v1/users/$userId/playlists");
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok","Content-Type: application/json"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['name'=>$plName,'description'=>$desc,'public'=>false]),CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>15]);
+        $r=json_decode(curl_exec($ch),true); curl_close($ch);
+        if(empty($r['id'])) jsonOut(['ok'=>false,'error'=>'Falha ao criar playlist no Spotify: '.($r['error']['message']??'erro desconhecido')]);
+        $newSpotId = $r['id'];
+        $spotUrl   = $r['external_urls']['spotify']??'';
+        // Search & add tracks
+        $appTok = spotToken();
+        $songs  = loadSongs($pl);
+        $uris=[];
+        foreach($songs as $s){
+            $uri = spotSearchTrack($appTok,$s['title'],$s['artist']);
+            if($uri) $uris[]=$uri;
+        }
+        if($uris) spotAddTracks($tok,$newSpotId,$uris);
+        // Save spotify_id back to local playlist
+        $pls=loadPlaylists();
+        foreach($pls as &$p){ if($p['id']===$pl['id']){ $p['spotify_id']=$newSpotId; $p['spotify_url']=$spotUrl; break; } } unset($p);
+        savePlaylists($pls);
+        jsonOut(['ok'=>true,'spotify_id'=>$newSpotId,'spotify_url'=>$spotUrl,'tracks_added'=>count($uris),'tracks_total'=>count($songs)]);
     }
 }
 
@@ -999,6 +1199,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .btn-ghost,.btn-danger{padding:3px 5px}
   .btn-ghost .btn-lbl,.btn-danger .btn-lbl{display:none}
   /* Hide all topbar secondary buttons — show only Add and overflow trigger */
+  .topbar #importTextBtn,
   .topbar #mergePlBtn,
   .topbar #composerBtn,
   .topbar #syncBtn,
@@ -1181,6 +1382,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <span class="saving" id="savingInd">Salvo ✓</span>
 
       <!-- Desktop: all buttons visible -->
+      <button class="btn btn-outline" id="importTextBtn" title="Importar lista de texto">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span class="btn-lbl">Importar</span>
+      </button>
       <button class="btn btn-outline" id="mergePlBtn" title="Merge de listas">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
         <span class="btn-lbl">Merge</span>
@@ -1213,6 +1418,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
       <!-- Mobile overflow dropdown -->
       <div class="tb-overflow-menu" id="tbOverflowMenu">
+        <button class="btn btn-outline" id="importTextBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Importar Texto
+        </button>
         <button class="btn btn-outline" id="mergePlBtnM">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
           Merge de Listas
@@ -1499,7 +1708,79 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   </div>
 </div>
 
-<!-- Merge Playlists modal -->
+<!-- Import from text modal -->
+<div class="modal-overlay" id="importTextModal">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title">Importar Lista de Texto</div>
+    <div class="modal-sub">Cola a tua lista no formato <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título — Artista</code> (um por linha, número opcional).</div>
+
+    <!-- Destination -->
+    <div class="fg">
+      <label class="fl">Destino</label>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem">
+          <input type="radio" name="importDest" value="new" id="importDestNew" checked style="accent-color:var(--accent)">
+          Criar nova lista
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem">
+          <input type="radio" name="importDest" value="existing" id="importDestExisting" style="accent-color:var(--accent)">
+          Adicionar à lista actual (<strong id="importDestCurrentName"></strong>)
+        </label>
+      </div>
+    </div>
+
+    <div class="fg" id="importNewNameFg">
+      <label class="fl">Nome da nova lista <span style="color:var(--danger)">*</span></label>
+      <input class="fi" type="text" id="importNewName" placeholder="Ex: Setlist Casamento">
+    </div>
+
+    <div class="fg">
+      <label class="fl" style="display:flex;align-items:center;justify-content:space-between">
+        Lista de músicas
+        <span id="importLineCount" style="font-family:'DM Mono',monospace;font-size:.65rem;color:var(--text3)">0 linhas</span>
+      </label>
+      <textarea class="fi" id="importTextArea" rows="10" placeholder="1. Stand By Me — John Lennon&#10;2. Crazy Little Thing Called Love — Queen&#10;Bizarre Love Triangle — New Order&#10;..." style="resize:vertical;font-family:'DM Mono',monospace;font-size:.72rem;line-height:1.6"></textarea>
+    </div>
+
+    <div id="importError" class="alert alert-err" style="display:none"></div>
+    <div id="importResult" class="alert alert-ok" style="display:none"></div>
+
+    <!-- Spotify option (shown after successful import of new list) -->
+    <div id="importSpotWrap" style="display:none;border:1px solid var(--border2);border-radius:var(--r);padding:12px;margin-top:4px">
+      <div style="font-size:.78rem;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;color:var(--accent)"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
+        Criar também no Spotify?
+      </div>
+      <div style="font-size:.74rem;color:var(--text3);margin-bottom:10px">A lista foi criada localmente. Podes criar uma playlist no Spotify e sincronizar as músicas agora.</div>
+      <?php if(!$hasSpotUser): ?>
+        <?php if($spotOAuthLink): ?>
+        <a href="<?= htmlspecialchars($spotOAuthLink??'#') ?>" class="btn btn-outline" style="font-size:.75rem;display:inline-flex">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
+          Ligar conta Spotify primeiro
+        </a>
+        <?php else: ?>
+        <div style="font-size:.72rem;color:var(--text3)">Credenciais Spotify não configuradas.</div>
+        <?php endif; ?>
+      <?php else: ?>
+      <button class="btn btn-primary" id="importCreateSpotBtn" style="font-size:.78rem">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
+        Criar Playlist no Spotify
+      </button>
+      <div id="importSpotResult" style="display:none;font-size:.74rem;margin-top:8px"></div>
+      <?php endif; ?>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('importTextModal')">Fechar</button>
+      <button class="btn btn-primary" id="importDoBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Importar
+      </button>
+    </div>
+  </div>
+</div>
+
+
 <div class="modal-overlay" id="mergeModal">
   <div class="modal" style="max-width:500px">
     <div class="modal-title">Merge de Listas</div>
@@ -2399,6 +2680,118 @@ $('#syncApplyBtn').on('click', function(){
   });
 });
 
+// ── Import from text ──────────────────────────────────────────
+var _importedPlId = null;
+
+$('#importTextBtn').on('click', function(){
+  guardedAction(function(){
+    _importedPlId = null;
+    $('#importTextArea').val('');
+    $('#importNewName').val('');
+    $('#importError,#importResult,#importSpotWrap').hide();
+    $('#importDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
+    $('#importDestNew').prop('checked',true);
+    $('#importNewNameFg').show();
+    $('#importDestCurrentName').text(<?= json_encode($activePl['name']??'') ?>);
+    $('#importLineCount').text('0 linhas');
+    openModal('importTextModal');
+    setTimeout(function(){ $('#importTextArea').focus(); },80);
+  });
+});
+
+// Destination toggle
+$('input[name="importDest"]').on('change', function(){
+  if($(this).val()==='new') $('#importNewNameFg').show();
+  else $('#importNewNameFg').hide();
+});
+
+// Live line counter
+$('#importTextArea').on('input', function(){
+  var lines = $(this).val().split('\n').filter(function(l){ return l.trim()!==''; });
+  $('#importLineCount').text(lines.length+' linha'+(lines.length===1?'':'s'));
+});
+
+$('#importDoBtn').on('click', function(){
+  var txt  = $('#importTextArea').val().trim();
+  var dest = $('input[name="importDest"]:checked').val();
+  var name = $('#importNewName').val().trim();
+  if(!txt){ $('#importError').text('Cola a lista primeiro.').show(); return; }
+  if(dest==='new' && !name){ $('#importError').text('Define um nome para a nova lista.').show(); return; }
+  $('#importError').hide();
+  var btn=$(this);
+  btn.prop('disabled',true).text('A importar…');
+
+  var payload = {_action:'import_text', pl:PL_ID, text:txt};
+  if(dest==='new'){
+    payload.name = name;
+  } else {
+    payload.target_id = PL_ID;
+  }
+
+  $.ajax({
+    url: '?pl='+PL_ID,
+    method: 'POST',
+    data: payload,
+    dataType: 'json',
+    contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
+    success: function(r){
+      btn.prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
+      if(r.ok){
+        _importedPlId = r.id;
+        var msg = dest==='new'
+          ? '✓ Lista "'+r.name+'" criada com '+r.added+' música'+(r.added===1?'':'s')+'!'
+          : '✓ '+r.added+' música'+(r.added===1?' adicionada':' adicionadas')+' à lista (total: '+r.total+').';
+        $('#importResult').text(msg).show();
+        $('#importDoBtn').hide();
+        if(dest==='new'){
+          $('#importSpotWrap').show();
+          $('#importCreateSpotBtn').data('pl-id', r.id).data('pl-name', r.name);
+        }
+        if(dest==='existing'){
+          setTimeout(function(){ window.location.reload(); }, 1200);
+        }
+      } else {
+        $('#importError').text(r.error||'Erro ao importar.').show();
+      }
+    },
+    error: function(){
+      btn.prop('disabled',false).html('Importar');
+      $('#importError').text('Erro de rede.').show();
+    }
+  });
+});
+
+// ── Create Spotify playlist from imported list ────────────────
+$('#importCreateSpotBtn').on('click', function(){
+  var plId   = $(this).data('pl-id')   || _importedPlId;
+  var plName = $(this).data('pl-name') || $('#importNewName').val().trim();
+  var btn = $(this);
+  btn.prop('disabled',true).text('A criar no Spotify…');
+  $('#importSpotResult').hide();
+
+  $.post('?pl='+plId, {_action:'create_spot_playlist', pl:plId, name:plName, desc:'Importada via SetList'}, function(r){
+    btn.prop('disabled',false).html('<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg> Criar Playlist no Spotify');
+    if(r.ok){
+      var found = r.tracks_added+'/'+r.tracks_total;
+      var spotLink = r.spotify_url
+        ? ' <a href="'+r.spotify_url+'" target="_blank" style="color:var(--accent);text-decoration:none">Abrir no Spotify ↗</a>'
+        : '';
+      $('#importSpotResult').html('✓ Playlist criada! '+found+' músicas adicionadas.'+spotLink).css('color','var(--accent)').show();
+      btn.prop('disabled',true).text('Criada ✓');
+      // Navigate to the new playlist after a moment
+      setTimeout(function(){ window.location.href='?pl='+encodeURIComponent(plId); }, 2200);
+    } else if(r.error==='auth_required'){
+      $('#importSpotResult').html('Sessão Spotify expirada. <a href="'+window.location.href+'" style="color:var(--accent)">Recarrega</a> e tenta novamente.').css('color','var(--danger)').show();
+    } else {
+      $('#importSpotResult').text(r.error||'Erro ao criar playlist.').css('color','var(--danger)').show();
+      btn.prop('disabled',false);
+    }
+  }, 'json').fail(function(){
+    btn.prop('disabled',false);
+    $('#importSpotResult').text('Erro de rede.').css('color','var(--danger)').show();
+  });
+});
+
 // ── Mobile overflow menu ───────────────────────────────────────
 function closeOverflow(){ $('#tbOverflowMenu').removeClass('open'); }
 $('#tbMoreBtn').on('click', function(e){
@@ -2409,6 +2802,7 @@ $(document).on('click', function(e){
   if(!$(e.target).closest('#tbOverflowMenu,#tbMoreBtn').length) closeOverflow();
 });
 // Mirror mobile buttons to their desktop counterparts
+$('#importTextBtnM').on('click', function(){ closeOverflow(); $('#importTextBtn').trigger('click'); });
 $('#mergePlBtnM').on('click', function(){ closeOverflow(); $('#mergePlBtn').trigger('click'); });
 $('#composerBtnM').on('click', function(){ closeOverflow(); $('#composerBtn').trigger('click'); });
 $('#syncBtnM').on('click', function(){ closeOverflow(); $('#syncBtn').trigger('click'); });
