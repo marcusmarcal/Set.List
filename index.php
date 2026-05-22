@@ -435,7 +435,7 @@ function fmtMs($ms) {
 // ════════════════════════════════════════════════════════════════
 //  AJAX / POST HANDLERS  (all return JSON or redirect)
 // ════════════════════════════════════════════════════════════════
-$ajax = $_SERVER['HTTP_X_REQUESTED_WITH']??'' === 'XMLHttpRequest'
+$ajax = (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest')
      || isset($_POST['_ajax']) || isset($_GET['_ajax']);
 
 function jsonOut($d){ header('Content-Type: application/json; charset=utf-8'); echo json_encode($d, JSON_UNESCAPED_UNICODE); exit; }
@@ -851,10 +851,13 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                 $parts = explode('|', $line, 2);
                 $title  = trim($parts[0]);
                 $artist = trim($parts[1]);
-                if($title && $artist) $parsed[] = ['title'=>$title,'artist'=>$artist];
+                if($title) $parsed[] = ['title'=>$title,'artist'=>$artist];
+            } else {
+                // Linha sem separador: aceitar só com título
+                if($line !== '') $parsed[] = ['title'=>$line,'artist'=>''];
             }
         }
-        if(empty($parsed)) jsonOut(['ok'=>false,'error'=>'Nenhuma música reconhecida. Usa o formato "Título — Artista". Reconhecidas: '.count($lines).' linhas.','debug_first'=>$lines[0]??'']);
+        if(empty($parsed)) jsonOut(['ok'=>false,'error'=>'Nenhuma música reconhecida. Cola uma música por linha.','debug_first'=>$lines[0]??'']);
 
         if($addToExisting){
             $pls=loadPlaylists(); $targetPl=null;
@@ -1712,18 +1715,18 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 <div class="modal-overlay" id="importTextModal">
   <div class="modal" style="max-width:560px">
     <div class="modal-title">Importar Lista de Texto</div>
-    <div class="modal-sub">Cola a tua lista no formato <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título — Artista</code> (um por linha, número opcional).</div>
+    <div class="modal-sub">Cola a tua lista (um por linha, número opcional). Formato: <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título — Artista</code> ou só <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título</code>.</div>
 
     <!-- Destination -->
     <div class="fg">
       <label class="fl">Destino</label>
       <div style="display:flex;flex-direction:column;gap:6px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem">
-          <input type="radio" name="importDest" value="new" id="importDestNew" checked style="accent-color:var(--accent)">
+          <input type="radio" name="importDest" value="new" id="importDestNew" style="accent-color:var(--accent)">
           Criar nova lista
         </label>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.8rem">
-          <input type="radio" name="importDest" value="existing" id="importDestExisting" style="accent-color:var(--accent)">
+          <input type="radio" name="importDest" value="existing" id="importDestExisting" checked style="accent-color:var(--accent)">
           Adicionar à lista actual (<strong id="importDestCurrentName"></strong>)
         </label>
       </div>
@@ -1739,11 +1742,11 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         Lista de músicas
         <span id="importLineCount" style="font-family:'DM Mono',monospace;font-size:.65rem;color:var(--text3)">0 linhas</span>
       </label>
-      <textarea class="fi" id="importTextArea" rows="10" placeholder="1. Stand By Me — John Lennon&#10;2. Crazy Little Thing Called Love — Queen&#10;Bizarre Love Triangle — New Order&#10;..." style="resize:vertical;font-family:'DM Mono',monospace;font-size:.72rem;line-height:1.6"></textarea>
+      <textarea class="fi" id="importTextArea" rows="10" placeholder="1. Stand By Me — John Lennon&#10;2. Crazy Little Thing Called Love — Queen&#10;Bizarre Love Triangle&#10;Imagine&#10;..." style="resize:vertical;font-family:'DM Mono',monospace;font-size:.72rem;line-height:1.6"></textarea>
     </div>
 
-    <div id="importError" class="alert alert-err" style="display:none"></div>
-    <div id="importResult" class="alert alert-ok" style="display:none"></div>
+    <div id="importTextError" class="alert alert-err" style="display:none"></div>
+    <div id="importTextResult" class="alert alert-ok" style="display:none"></div>
 
     <!-- Spotify option (shown after successful import of new list) -->
     <div id="importSpotWrap" style="display:none;border:1px solid var(--border2);border-radius:var(--r);padding:12px;margin-top:4px">
@@ -1770,9 +1773,18 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <?php endif; ?>
     </div>
 
+    <div id="importDebugWrap" style="display:none;margin-top:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">🐛 Debug</span>
+        <button onclick="$('#importDebugLog').text('');$('#importDebugWrap').hide();" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:.7rem;padding:0">limpar</button>
+      </div>
+      <pre id="importDebugLog" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:8px;font-family:'DM Mono',monospace;font-size:.65rem;line-height:1.5;color:var(--text2);white-space:pre-wrap;word-break:break-all;max-height:180px;overflow-y:auto;margin:0"></pre>
+    </div>
+
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('importTextModal')">Fechar</button>
-      <button class="btn btn-primary" id="importDoBtn">
+      <button class="btn btn-outline" id="importToggleDebugBtn" style="font-size:.72rem;padding:4px 10px" title="Mostrar/esconder debug">🐛</button>
+      <button class="btn btn-primary" id="importTextDoBtn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         Importar
       </button>
@@ -2364,7 +2376,7 @@ function openImportModal(plId,plName){
   guardedAction(function(){
     _importPlId=plId;
     $('#importModalSub').text('Playlist: '+plName);
-    $('#importResult').hide(); $('#impReplace').prop('checked',true);
+    $('#importTextResult').hide(); $('#impReplace').prop('checked',true);
     openModal('importModal');
   });
 }
@@ -2374,7 +2386,7 @@ $('#importDoBtn').on('click',function(){
   $.post('?pl='+PL_ID,{_action:'import',target_id:_importPlId,mode:mode,pl:PL_ID},function(r){
     $('#importDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg> Importar');
     if(r.ok){
-      $('#importResult').text(r.count+' músicas importadas para "'+r.name+'".').show();
+      $('#importTextResult').text(r.count+' músicas importadas para "'+r.name+'".').show();
       if(_importPlId===PL_ID) setTimeout(function(){ window.location.reload(); },1200);
     }
   },'json');
@@ -2683,20 +2695,37 @@ $('#syncApplyBtn').on('click', function(){
 // ── Import from text ──────────────────────────────────────────
 var _importedPlId = null;
 
+// ── Import debug helper ───────────────────────────────────────
+function importDebug(msg) {
+  var ts = new Date().toLocaleTimeString('pt-PT', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  var log = $('#importDebugLog');
+  log.text(log.text() + '['+ts+'] ' + msg + '\n');
+  log.scrollTop(log[0].scrollHeight);
+  $('#importDebugWrap').show();
+  console.log('[ImportDebug]', msg);
+}
+
 $('#importTextBtn').on('click', function(){
+  console.log('[ImportDebug] Botão importar clicado. LOCKED='+LOCKED+' AUTHED='+AUTHED);
   guardedAction(function(){
     _importedPlId = null;
     $('#importTextArea').val('');
     $('#importNewName').val('');
     $('#importError,#importResult,#importSpotWrap').hide();
-    $('#importDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
-    $('#importDestNew').prop('checked',true);
-    $('#importNewNameFg').show();
+    $('#importTextDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
+    $('#importDestExisting').prop('checked',true);
+    $('#importNewNameFg').hide();
     $('#importDestCurrentName').text(<?= json_encode($activePl['name']??'') ?>);
     $('#importLineCount').text('0 linhas');
     openModal('importTextModal');
     setTimeout(function(){ $('#importTextArea').focus(); },80);
   });
+});
+
+// Debug toggle button
+$('#importToggleDebugBtn').on('click', function(){
+  if($('#importDebugWrap').is(':visible')) $('#importDebugWrap').hide();
+  else $('#importDebugWrap').show();
 });
 
 // Destination toggle
@@ -2711,13 +2740,17 @@ $('#importTextArea').on('input', function(){
   $('#importLineCount').text(lines.length+' linha'+(lines.length===1?'':'s'));
 });
 
-$('#importDoBtn').on('click', function(){
+$('#importTextDoBtn').on('click', function(){
   var txt  = $('#importTextArea').val().trim();
   var dest = $('input[name="importDest"]:checked').val();
   var name = $('#importNewName').val().trim();
-  if(!txt){ $('#importError').text('Cola a lista primeiro.').show(); return; }
-  if(dest==='new' && !name){ $('#importError').text('Define um nome para a nova lista.').show(); return; }
-  $('#importError').hide();
+
+  // Debug: log state
+  importDebug('Botão clicado. dest='+dest+' txt_len='+txt.length+' name="'+name+'" PL_ID='+PL_ID);
+
+  if(!txt){ $('#importTextError').text('Cola a lista primeiro.').show(); return; }
+  if(dest==='new' && !name){ $('#importTextError').text('Define um nome para a nova lista.').show(); return; }
+  $('#importTextError').hide();
   var btn=$(this);
   btn.prop('disabled',true).text('A importar…');
 
@@ -2728,6 +2761,8 @@ $('#importDoBtn').on('click', function(){
     payload.target_id = PL_ID;
   }
 
+  importDebug('A enviar POST para: ?pl='+PL_ID+' | payload keys: '+Object.keys(payload).join(', '));
+
   $.ajax({
     url: '?pl='+PL_ID,
     method: 'POST',
@@ -2735,14 +2770,15 @@ $('#importDoBtn').on('click', function(){
     dataType: 'json',
     contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
     success: function(r){
+      importDebug('Resposta recebida: '+JSON.stringify(r).substring(0,200));
       btn.prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
       if(r.ok){
         _importedPlId = r.id;
         var msg = dest==='new'
           ? '✓ Lista "'+r.name+'" criada com '+r.added+' música'+(r.added===1?'':'s')+'!'
           : '✓ '+r.added+' música'+(r.added===1?' adicionada':' adicionadas')+' à lista (total: '+r.total+').';
-        $('#importResult').text(msg).show();
-        $('#importDoBtn').hide();
+        $('#importTextResult').text(msg).show();
+        $('#importTextDoBtn').hide();
         if(dest==='new'){
           $('#importSpotWrap').show();
           $('#importCreateSpotBtn').data('pl-id', r.id).data('pl-name', r.name);
@@ -2751,12 +2787,15 @@ $('#importDoBtn').on('click', function(){
           setTimeout(function(){ window.location.reload(); }, 1200);
         }
       } else {
-        $('#importError').text(r.error||'Erro ao importar.').show();
+        importDebug('Servidor retornou erro: '+(r.error||'(sem mensagem)'));
+        $('#importTextError').text(r.error||'Erro ao importar.').show();
       }
     },
-    error: function(){
+    error: function(xhr, status, err){
       btn.prop('disabled',false).html('Importar');
-      $('#importError').text('Erro de rede.').show();
+      var rawResp = xhr.responseText ? xhr.responseText.substring(0,500) : '(vazio)';
+      importDebug('ERRO AJAX | status='+xhr.status+' | statusText='+xhr.statusText+' | parseErr='+err+'\nResposta raw: '+rawResp);
+      $('#importTextError').text('Erro (HTTP '+xhr.status+'): '+err+'. Vê o painel de debug abaixo.').show();
     }
   });
 });
