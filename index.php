@@ -346,39 +346,76 @@ function spotRemoveTracks($tok,$plId,$uris) {
     }
 }
 
-// Search Spotify for a track URI by title+artist
-function spotSearchTrack($tok,$title,$artist) {
+// Search Spotify for a track ID by title+artist
+function spotSearchTrackId($tok,$title,$artist) {
     $q=urlencode("track:$title artist:$artist");
     $ch=curl_init("https://api.spotify.com/v1/search?q=$q&type=track&limit=1");
     curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
     $d=json_decode(curl_exec($ch),true); curl_close($ch);
-    return $d['tracks']['items'][0]['uri'] ?? null;
-}
-
-// Get composers (writers) from Spotify track features — uses audio-features endpoint for track_id
-// Note: Spotify API does not expose composers directly via public API.
-// We use the track's artists as a fallback and fetch album info to get any credited composer info.
-// For true composer metadata we search the track and read the artists array + album.
-function spotTrackComposers($tok,$trackUri) {
-    // Extract track ID from URI spotify:track:XXXX or URL
-    if(preg_match('/track[\/:]([A-Za-z0-9]{10,})/',$trackUri,$m)) $trackId=$m[1];
-    else return null;
-    $ch=curl_init("https://api.spotify.com/v1/tracks/$trackId");
-    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
-    $d=json_decode(curl_exec($ch),true); curl_close($ch);
-    if(empty($d['artists'])) return null;
-    // Spotify public API does not expose songwriters separately from performers.
-    // We return all credited artists (which often includes composers for solo acts).
-    return array_map(function($a){return $a['name'];},$d['artists']);
-}
-
-// Fetch composers for a song via Spotify search
-function spotFetchComposer($tok,$title,$artist) {
-    $uri = spotSearchTrack($tok,$title,$artist);
+    $uri = $d['tracks']['items'][0]['uri'] ?? null;
     if(!$uri) return null;
-    $composers = spotTrackComposers($tok,$uri);
-    if(!$composers) return null;
-    return implode(', ',$composers);
+    if(preg_match('/track[\/:]([A-Za-z0-9]{10,})/',$uri,$m)) return $m[1];
+    return null;
+}
+
+// Search Spotify for a track URI by title+artist
+function spotSearchTrack($tok,$title,$artist) {
+    $id = spotSearchTrackId($tok,$title,$artist);
+    return $id ? "spotify:track:$id" : null;
+}
+
+// Fetch real composers/songwriters via Spotify's internal credits API
+// This is the same endpoint used by the Spotify app "Credits" panel.
+// It requires a valid user Bearer token (not client_credentials).
+function spotTrackCredits($tok,$trackId) {
+    $ch=curl_init("https://spclient.wg.spotify.com/track-credits-view/v0/track/$trackId/credits");
+    curl_setopt_array($ch,[
+        CURLOPT_HTTPHEADER=>[
+            "Authorization: Bearer $tok",
+            "Accept: application/json",
+            "App-Platform: WebPlayer",
+            "spotify-app-version: 1.2.30.1135.g9e0c3a0e",
+        ],
+        CURLOPT_RETURNTRANSFER=>true,
+        CURLOPT_SSL_VERIFYPEER=>false,
+        CURLOPT_SSL_VERIFYHOST=>false,
+        CURLOPT_TIMEOUT=>10,
+    ]);
+    $raw = curl_exec($ch); curl_close($ch);
+    $d = json_decode($raw,true);
+    if(empty($d['roleCredits'])) return null;
+    $composers = [];
+    foreach($d['roleCredits'] as $role){
+        $roleName = strtolower($role['roleTitle']??'');
+        // Roles that mean "composer/songwriter/writer"
+        if(preg_match('/compos|writer|lyric|author|musik|autor/i',$roleName)){
+            foreach($role['artists']??[] as $a){
+                $name = $a['name']??'';
+                if($name && !in_array($name,$composers)) $composers[]=$name;
+            }
+        }
+    }
+    return $composers ?: null;
+}
+
+// Fetch real composers/songwriters via Spotify's internal credits API
+function spotFetchComposer($tok,$title,$artist) {
+    $trackId = spotSearchTrackId($tok,$title,$artist);
+    if(!$trackId) return null;
+
+    // Try the internal credits API with user token first (OAuth — best results)
+    $userTok = spotUserToken();
+    if($userTok){
+        $composers = spotTrackCredits($userTok,$trackId);
+        if($composers) return implode(', ',$composers);
+    }
+
+    // Fallback: try with the app token
+    $composers = spotTrackCredits($tok,$trackId);
+    if($composers) return implode(', ',$composers);
+
+    // No composers found — return null (never fall back to artist name)
+    return null;
 }
 
 // ── Title normalisation for fuzzy matching ───────────────────────
@@ -726,14 +763,23 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $tok = spotToken();
         if(!$tok) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas']);
         $pl = getActivePl(); $songs = loadSongs($pl);
-        $updated = 0;
+        $updated = 0; $failed = 0;
         foreach($songs as &$s){
-            if(!empty($s['composer'])) continue; // skip already fetched
+            // Always re-fetch — allows correcting wrong composers
             $c = spotFetchComposer($tok,$s['title'],$s['artist']);
-            if($c){ $s['composer']=$c; $updated++; }
+            if($c){
+                $s['composer'] = $c;
+                $updated++;
+            } else {
+                // Remove wrong composer if credits not found
+                unset($s['composer']);
+                $failed++;
+            }
+            usleep(120000); // 120ms between requests
         } unset($s);
         saveSongs($pl,$songs);
-        jsonOut(['ok'=>true,'updated'=>$updated,'songs'=>$songs]);
+        $hasUserTok = hasSpotUserToken();
+        jsonOut(['ok'=>true,'updated'=>$updated,'failed'=>$failed,'songs'=>$songs,'used_credits_api'=>$hasUserTok]);
     }
 
     // ── Spotify sync diff ──
@@ -1472,7 +1518,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
     <div class="stats-row">
       <div class="stat-card"><div class="stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Músicas</div></div>
-      <div class="stat-card"><div class="stat-num"><?= str_pad($artistCount,2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Artistas</div></div>
+      <div class="stat-card"><div class="stat-num"><?= str_pad(count(array_filter($songs,function($s){return !empty($s['composer']);})),2,'0',STR_PAD_LEFT) ?></div><div class="stat-label">Com Compositor</div></div>
       <?php if($durStr): ?>
       <div class="stat-card"><div class="stat-num" style="font-size:1.2rem"><?= $durStr ?></div><div class="stat-label">Duração</div></div>
       <?php endif; ?>
@@ -1483,7 +1529,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="search-input" id="searchInput" placeholder="Buscar…">
       </div>
-      <a href="?pl=<?= urlencode($plId) ?>&sort=title&order=<?= ($sortCol==='title'&&$sortOrd==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Título</a>
+      <a href="?pl=<?= urlencode($plId) ?>&sort=title&order=<?= ($sortCol==='title'&&$sortOrd==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Tema</a>
       <a href="?pl=<?= urlencode($plId) ?>&sort=artist&order=<?= ($sortCol==='artist'&&$sortOrd==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Artista</a>
     </div>
 
@@ -1493,8 +1539,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
           <tr>
             <th style="width:34px"></th>
             <th class="td-num">#</th>
-            <th>Título</th>
-            <th>Artista / Compositor</th>
+            <th>Tema</th>
+            <th>Compositor</th>
             <th class="td-cifra">Cifra</th>
             <th class="td-spot"></th>
             <th class="td-actions">Ações</th>
@@ -1522,9 +1568,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <td class="td-num"><?= str_pad($i+1,2,'0',STR_PAD_LEFT) ?></td>
             <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
             <td class="td-artist">
-              <?= htmlspecialchars($song['artist']) ?>
               <?php if(!empty($song['composer'])): ?>
-                <div style="font-size:.65rem;color:var(--text3);margin-top:1px">✍ <?= htmlspecialchars($song['composer']) ?></div>
+                <?= htmlspecialchars($song['composer']) ?>
+              <?php else: ?>
+                <span style="color:var(--text3);font-size:.72rem">—</span>
               <?php endif; ?>
             </td>
             <td class="td-cifra">
@@ -1822,7 +1869,12 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="alert alert-err">Credenciais Spotify não configuradas no <code style="font-family:'DM Mono',monospace">.env</code>.</div>
     <?php else: ?>
     <div style="font-size:.78rem;color:var(--text2);margin-bottom:12px;line-height:1.5">
-      O Spotify indica os artistas creditados em cada faixa. Para artistas/compositores solo isto equivale ao compositor. Músicas que já têm compositor definido serão ignoradas.
+      Usa a API de créditos do Spotify para obter os compositores reais de cada faixa (Carlinhos Brown, Marisa Monte, etc). <?php if(!$hasSpotUser): ?>
+      <strong style="color:var(--accent)">Para melhores resultados, liga primeiro a tua conta Spotify no botão Sync.</strong>
+      <?php else: ?>
+      <span style="color:var(--accent)">✓ Conta Spotify ligada — a usar a API de créditos completa.</span>
+      <?php endif; ?>
+      Músicas que já têm compositor definido serão ignoradas.
     </div>
     <div id="composerProgress" style="display:none">
       <div style="font-family:'DM Mono',monospace;font-size:.7rem;color:var(--text3);margin-bottom:6px" id="composerProgressTxt">A processar…</div>
@@ -2210,7 +2262,7 @@ function saveSong(){
       SONGS[idx].cifra_url=data.cifra_url; SONGS[idx].cifra_source=data.cifra_source;
       var row=$('#songList tr[data-i="'+idx+'"]');
       row.find('.td-title').text(r.title);
-      row.find('.td-artist').text(r.artist);
+      row.find('.td-artist').html(r.composer ? escH(r.composer) : '<span style="color:var(--text3);font-size:.72rem">—</span>');
       row.data('title',r.title).data('artist',r.artist);
       // Update cifra badge
       var cell=row.find('.td-cifra');
@@ -2231,7 +2283,7 @@ function saveSong(){
         +'<td style="width:34px;padding-right:0"><span class="drag-handle"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg></span></td>'
         +'<td class="td-num">'+num+'</td>'
         +'<td class="td-title">'+escH(r.title)+'</td>'
-        +'<td class="td-artist">'+escH(r.artist)+'</td>'
+        +'<td class="td-artist"><span style="color:var(--text3);font-size:.72rem">—</span></td>'
         +'<td class="td-cifra">'+cifraBadge+'</td>'
         +'<td class="td-spot"></td>'
         +'<td class="td-actions"><div class="aw"><button class="btn btn-ghost edit-btn" data-i="'+r.index+'" title="Editar"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><span class="btn-lbl">Editar</span></button>'
@@ -2385,7 +2437,7 @@ $('#copyListBtn').on('click',function(){
   var name=<?= json_encode($activePl['name']??'SetList') ?>;
   var date=new Date().toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});
   var lines=['═══════════════════════════════════','  '+name.toUpperCase(),'  '+SONGS.length+' músicas · '+date,'═══════════════════════════════════',''];
-  SONGS.forEach(function(s,i){ lines.push(String(i+1).padStart(2,'0')+'.  '+s.title+'  —  '+s.artist); });
+  SONGS.forEach(function(s,i){ lines.push(String(i+1).padStart(2,'0')+'.  '+s.title+(s.composer?'  ('+s.composer+')':'')); });
   lines.push(''); lines.push('───────────────────────────────────');
   var text=lines.join('\n');
   if(navigator.clipboard&&navigator.clipboard.writeText){
@@ -2498,25 +2550,25 @@ $('#composerDoBtn').on('click', function(){
       // Update SONGS and DOM
       if(r.songs){
         r.songs.forEach(function(s,i){
-          if(s.composer){
-            SONGS[i] = SONGS[i]||{};
-            SONGS[i].composer = s.composer;
-            var row = $('#songList tr[data-i="'+i+'"]');
-            var artistCell = row.find('.td-artist');
-            if(artistCell.length){
-              var existing = artistCell.find('.composer-hint');
-              if(!existing.length){
-                artistCell.append('<div class="composer-hint" style="font-size:.65rem;color:var(--text3);margin-top:1px">✍ '+escH(s.composer)+'</div>');
-              } else {
-                existing.text('✍ '+s.composer);
-              }
+          SONGS[i] = SONGS[i]||{};
+          SONGS[i].composer = s.composer||'';
+          var row = $('#songList tr[data-i="'+i+'"]');
+          var composerCell = row.find('.td-artist');
+          if(composerCell.length){
+            if(s.composer){
+              composerCell.html(escH(s.composer));
+            } else {
+              composerCell.html('<span style="color:var(--text3);font-size:.72rem">—</span>');
             }
           }
         });
       }
       var msg = r.updated > 0
-        ? '✓ '+r.updated+' música'+(r.updated===1?'':'s')+' com compositor actualizado.'
+        ? '✓ '+r.updated+' música'+(r.updated===1?'':'s')+' com compositor actualizado'+(r.failed?' · '+r.failed+' não encontrado'+(r.failed===1?'':'s'):'')+'.'
         : 'Nenhuma música nova para actualizar (todas já têm compositor ou não foram encontradas).';
+      if(r.used_credits_api===false && r.updated===0){
+        msg += ' Tenta ligar a conta Spotify (botão Sync) para aceder à API de créditos completa.';
+      }
       $('#composerResult').text(msg).show();
     } else {
       $('#composerResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro').show();
