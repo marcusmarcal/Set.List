@@ -580,6 +580,62 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true]);
     }
 
+    // ── Copy song to another playlist ──
+    if($act==='copy_song'){
+        needAuth();
+        $srcPl  = getActivePl();
+        $songs  = loadSongs($srcPl);
+        $i      = (int)($_POST['index']??-1);
+        $destId = trim($_POST['dest_pl']??'');
+        if($i<0||$i>=count($songs)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $pls = loadPlaylists();
+        $destPl = null;
+        foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
+        if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
+        $song = $songs[$i];
+        $destSongs = loadSongs($destPl);
+        // Check duplicate
+        foreach($destSongs as $s){
+            if(strtolower($s['title']??'')==strtolower($song['title']??'') &&
+               strtolower($s['artist']??'')==strtolower($song['artist']??'')){
+                jsonOut(['ok'=>false,'error'=>'A música já existe na lista destino.']);
+            }
+        }
+        $destSongs[] = $song;
+        saveSongs($destPl, $destSongs);
+        jsonOut(['ok'=>true,'dest_name'=>$destPl['name'],'total'=>count($destSongs)]);
+    }
+
+    // ── Move song to another playlist ──
+    if($act==='move_song'){
+        needAuth();
+        $srcPl  = getActivePl();
+        $songs  = loadSongs($srcPl);
+        $i      = (int)($_POST['index']??-1);
+        $destId = trim($_POST['dest_pl']??'');
+        if($i<0||$i>=count($songs)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $pls = loadPlaylists();
+        $destPl = null;
+        foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
+        if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
+        $song = $songs[$i];
+        $destSongs = loadSongs($destPl);
+        // Check duplicate
+        $alreadyExists = false;
+        foreach($destSongs as $s){
+            if(strtolower($s['title']??'')==strtolower($song['title']??'') &&
+               strtolower($s['artist']??'')==strtolower($song['artist']??'')){
+                $alreadyExists = true; break;
+            }
+        }
+        if(!$alreadyExists) $destSongs[] = $song;
+        // Remove from source
+        array_splice($songs,$i,1);
+        saveSongs($srcPl,$songs);
+        saveSongs($destPl,$destSongs);
+        jsonOut(['ok'=>true,'dest_name'=>$destPl['name'],'src_total'=>count($songs),'already_existed'=>$alreadyExists]);
+    }
+
     // ── Reorder playlists ──
     if($act==='reorder_pls'){
         needAuth();
@@ -1261,45 +1317,83 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 }
 
 @media print{
-  .sidebar,.topbar,.search-row,.td-actions,.btn,.hamburger,.sb-backdrop,
-  .modal-overlay,.stats-row,.ron,.cp-toast{display:none!important}
-  .main{margin-left:0}
-  body{background:#fff;color:#000;font-family:'DM Sans',sans-serif}
-  .content{padding:0}
-  .print-header{display:block!important;margin-bottom:14px}
-  .table-wrap{border:1px solid #bbb;border-radius:0}
+  /* Hide everything except what we want */
+  .sidebar,.topbar,.search-row,.td-actions,.td-cifra,.td-spot,
+  .btn,.hamburger,.sb-backdrop,.modal-overlay,.stats-row,.ron,
+  .cp-toast,#songCtxMenu{display:none!important}
+  th:nth-child(1),td:nth-child(1){display:none!important} /* drag handle col */
+  .badge{display:none!important}
+
+  /* Page layout */
+  @page{margin:1.4cm 1.6cm;size:A4 portrait}
+  body{background:#fff!important;color:#111!important;font-family:'DM Sans',sans-serif!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .main{margin-left:0!important}
+  .content{padding:0!important}
+
+  /* Print header */
+  .print-header{display:block!important;margin-bottom:18px}
+
+  /* Stat cards row */
+  .print-stats{display:flex!important;gap:10px;margin-bottom:18px}
+  .print-stat-card{
+    flex:1;border:1.5px solid #ccc;border-radius:10px;
+    padding:10px 14px 8px;text-align:left
+  }
+  .print-stat-num{font-family:'DM Mono',monospace;font-size:1.5rem;font-weight:700;color:#111;line-height:1;display:block}
+  .print-stat-label{font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;color:#888;margin-top:3px;display:block}
+
+  /* Table */
+  .table-wrap{border:none!important;border-radius:0!important;box-shadow:none!important}
   table{width:100%;border-collapse:collapse}
-  thead th{background:#eee!important;color:#333!important;font-size:.6rem;letter-spacing:.1em;padding:6px 10px;border-bottom:1px solid #bbb}
-  tbody td{color:#111!important;border-bottom:1px solid #e0e0e0}
+  thead th{
+    background:#fff!important;color:#aaa!important;
+    font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;
+    padding:5px 10px 5px;border-bottom:1.5px solid #111;font-weight:600
+  }
+  /* Number col */
+  thead th.th-num,tbody td.td-num{
+    width:36px;text-align:right;padding-right:14px;
+    font-family:'DM Mono',monospace;font-size:.75rem;color:#aaa!important
+  }
+  /* Title */
+  thead th.th-title{font-size:.55rem}
+  tbody td.td-title{font-size:.85rem;font-weight:500;color:#111!important;padding:6px 10px}
+  /* Artist */
+  thead th.th-artist{font-size:.55rem}
+  tbody td.td-artist{font-size:.78rem;color:#555!important;padding:6px 10px}
+  /* Duration */
+  .td-dur-print{display:table-cell!important}
+  .th-dur-print{display:table-cell!important}
+  tbody td.td-dur-print{
+    font-family:'DM Mono',monospace;font-size:.72rem;color:#999!important;
+    text-align:right;padding-right:4px;white-space:nowrap
+  }
+  thead th.th-dur-print{font-size:.55rem;text-align:right;padding-right:4px}
+
+  tbody tr{border-bottom:1px solid #eee}
   tbody tr:last-child td{border-bottom:none}
-  .td-num{font-family:monospace;color:#555!important}
-  .td-cifra,.td-spot{display:none}
-  th:nth-child(1),td:nth-child(1){display:none}
-  .badge{display:none}
 
-  /* 1 page — compact */
-  body.print-1page{font-size:9pt}
-  body.print-1page thead th{padding:3px 8px;font-size:7pt}
-  body.print-1page tbody td{padding:2px 8px;font-size:8.5pt}
-  body.print-1page .print-header h2{font-size:13pt}
+  /* Compact mode */
+  body.print-1page thead th{padding:3px 8px;font-size:.48rem}
+  body.print-1page tbody td.td-title{font-size:.78rem;padding:3px 8px}
+  body.print-1page tbody td.td-artist{font-size:.72rem;padding:3px 8px}
+  body.print-1page .print-header h2{font-size:14pt}
   body.print-1page .print-header p{font-size:7pt}
-  @page.print-1page{size:A4 portrait;margin:1cm 1.5cm}
+  body.print-1page .print-stat-num{font-size:1.15rem}
 
-  /* 2 pages — normal */
-  body.print-2page{font-size:11pt}
-  body.print-2page thead th{padding:5px 10px;font-size:8pt}
-  body.print-2page tbody td{padding:5px 10px;font-size:10pt}
-  body.print-2page .print-header h2{font-size:16pt}
+  /* Normal mode */
+  body.print-2page thead th{padding:5px 10px;font-size:.55rem}
+  body.print-2page tbody td.td-title{font-size:.9rem;padding:7px 10px}
+  body.print-2page tbody td.td-artist{font-size:.82rem;padding:7px 10px}
+  body.print-2page .print-header h2{font-size:17pt}
   body.print-2page .print-header p{font-size:8pt}
-
-  @page{margin:1.5cm 1.8cm;size:A4 portrait}
 }
 
 /* print header (hidden on screen) */
 .print-header{display:none}
-.print-header h2{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:700;margin:0 0 2px 0;color:#111}
-.print-header p{font-family:monospace;font-size:.62rem;color:#666;margin:0 0 10px 0;letter-spacing:.06em;text-transform:uppercase}
-.print-header hr{border:none;border-top:1.5px solid #222;margin-bottom:12px}
+.print-header h2{font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;margin:0 0 3px 0;color:#111;letter-spacing:-.01em}
+.print-header p{font-family:'DM Mono',monospace;font-size:.6rem;color:#888;margin:0 0 10px 0;letter-spacing:.07em;text-transform:uppercase}
+.print-stats{display:none}
 
 /* print modal */
 #printModal .modal{max-width:340px}
@@ -1310,6 +1404,67 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .print-opt-btn .pob-icon{font-size:1.4rem;display:block;margin-bottom:4px}
 .print-opt-btn .pob-label{font-weight:600;display:block}
 .print-opt-btn .pob-sub{font-size:.68rem;color:var(--text3);display:block;margin-top:2px}
+
+/* ── Context menu ───────────────────────────────────────────── */
+#songCtxMenu {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  padding: 5px 0;
+  min-width: 210px;
+  font-size: .8rem;
+  display: none;
+  user-select: none;
+}
+#songCtxMenu .ctx-header {
+  padding: 7px 14px 5px;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+#songCtxMenu .ctx-section {
+  padding: 4px 0 2px;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text3);
+  padding-left: 14px;
+  margin-top: 4px;
+}
+#songCtxMenu .ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background var(--tr);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#songCtxMenu .ctx-item:hover { background: var(--bg3); }
+#songCtxMenu .ctx-item svg { flex-shrink: 0; opacity: .7; }
+#songCtxMenu .ctx-item.ctx-danger { color: var(--danger); }
+#songCtxMenu .ctx-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+.song-row { user-select: none; }
+
 </style>
 </head>
 <body>
@@ -1496,8 +1651,27 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <!-- Print-only header (hidden on screen) -->
     <div class="print-header" id="printHeader">
       <h2><?= htmlspecialchars($activePl['name']??'SetList') ?></h2>
-      <p><?= $totalSongs ?> músicas<?= $durStr?' · '.$durStr:'' ?> · <span id="printDateSpan"></span></p>
-      <hr>
+      <p><span id="printDateSpan"></span></p>
+      <hr style="border:none;border-top:1.5px solid #111;margin-bottom:14px">
+    </div>
+    <!-- Stat cards — only shown on print -->
+    <div class="print-stats" style="display:none" id="printStatsRow">
+      <div class="print-stat-card">
+        <span class="print-stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></span>
+        <span class="print-stat-label">Músicas</span>
+      </div>
+      <div class="print-stat-card">
+        <span class="print-stat-num"><?= str_pad($artistCount,2,'0',STR_PAD_LEFT) ?></span>
+        <span class="print-stat-label">Artistas</span>
+      </div>
+      <div class="print-stat-card">
+        <span class="print-stat-num">00</span>
+        <span class="print-stat-label">Com Cifra</span>
+      </div>
+      <div class="print-stat-card">
+        <span class="print-stat-num" style="font-size:1.1rem;letter-spacing:-.02em"><?= $durStr ?: '—' ?></span>
+        <span class="print-stat-label">Duração</span>
+      </div>
     </div>
 
     <?php if(!$authed&&$locked): ?>
@@ -1534,6 +1708,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <th>Artista / Compositor</th>
             <th class="td-cifra">Cifra</th>
             <th class="td-spot"></th>
+            <th class="th-dur-print" style="display:none">Duração</th>
             <th class="td-actions">Ações</th>
           </tr>
         </thead>
@@ -1582,6 +1757,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
                 </a>
               <?php endif; ?>
             </td>
+            <td class="td-dur-print" style="display:none"><?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '' ?></td>
             <td class="td-actions">
               <div class="aw">
                 <button class="btn btn-ghost edit-btn" data-i="<?= $i ?>" title="Editar">
@@ -2483,13 +2659,18 @@ function doPrint() {
   // Set date in print header
   var date = new Date().toLocaleDateString('pt-PT',{day:'2-digit',month:'long',year:'numeric'});
   $('#printDateSpan').text(date);
+  // Show print-only stat cards and duration column
+  $('#printStatsRow').show();
   // Apply body class for page sizing
   $('body').removeClass('print-1page print-2page').addClass('print-'+_printPages+'page');
   closeModal('printModal');
   setTimeout(function(){
     window.print();
-    // Clean up class after print dialog closes
-    setTimeout(function(){ $('body').removeClass('print-1page print-2page'); }, 500);
+    // Clean up after print dialog closes
+    setTimeout(function(){
+      $('body').removeClass('print-1page print-2page');
+      $('#printStatsRow').hide();
+    }, 500);
   }, 200);
 }
 
