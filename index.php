@@ -636,6 +636,103 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'dest_name'=>$destPl['name'],'src_total'=>count($songs),'already_existed'=>$alreadyExists]);
     }
 
+<<<<<<< HEAD
+=======
+    // ── Bulk copy songs to another playlist ──
+    if($act==='copy_songs_bulk'){
+        needAuth();
+        $srcPl  = getActivePl();
+        $songs  = loadSongs($srcPl);
+        $destId = trim($_POST['dest_pl']??'');
+        $indices = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($indices)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $pls=loadPlaylists(); $destPl=null;
+        foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
+        if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
+        $destSongs=loadSongs($destPl);
+        $added=0; $skipped=0;
+        foreach($indices as $i){
+            if(!isset($songs[(int)$i])) continue;
+            $s=$songs[(int)$i];
+            $dup=false;
+            foreach($destSongs as $d)
+                if(strtolower($d['title']??'')==strtolower($s['title']??'')&&strtolower($d['artist']??'')==strtolower($s['artist']??'')){$dup=true;break;}
+            if($dup){$skipped++;continue;}
+            $destSongs[]=$s; $added++;
+        }
+        saveSongs($destPl,$destSongs);
+        jsonOut(['ok'=>true,'added'=>$added,'skipped'=>$skipped,'dest_name'=>$destPl['name']]);
+    }
+
+    // ── Bulk move songs to another playlist ──
+    if($act==='move_songs_bulk'){
+        needAuth();
+        $srcPl  = getActivePl();
+        $songs  = loadSongs($srcPl);
+        $destId = trim($_POST['dest_pl']??'');
+        $indices = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($indices)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $pls=loadPlaylists(); $destPl=null;
+        foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
+        if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
+        $destSongs=loadSongs($destPl);
+        $added=0; $skipped=0;
+        $toRemove=[];
+        foreach($indices as $i){
+            $i=(int)$i;
+            if(!isset($songs[$i])) continue;
+            $s=$songs[$i];
+            $dup=false;
+            foreach($destSongs as $d)
+                if(strtolower($d['title']??'')==strtolower($s['title']??'')&&strtolower($d['artist']??'')==strtolower($s['artist']??'')){$dup=true;break;}
+            if(!$dup){$destSongs[]=$s;$added++;}else{$skipped++;}
+            $toRemove[]=$i;
+        }
+        // Remove from source (reverse order to keep indices valid)
+        rsort($toRemove);
+        foreach($toRemove as $i) array_splice($songs,$i,1);
+        saveSongs($srcPl,$songs);
+        saveSongs($destPl,$destSongs);
+        jsonOut(['ok'=>true,'added'=>$added,'skipped'=>$skipped,'dest_name'=>$destPl['name'],'removed'=>count($toRemove)]);
+    }
+
+    // ── Bulk delete songs ──
+    if($act==='delete_songs_bulk'){
+        needAuth();
+        $pl = getActivePl();
+        $songs = loadSongs($pl);
+        $indices = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($indices)) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $toRemove = array_map('intval',$indices);
+        rsort($toRemove);
+        $removed = 0;
+        foreach($toRemove as $i){
+            if(isset($songs[$i])){ array_splice($songs,$i,1); $removed++; }
+        }
+        saveSongs($pl,$songs);
+        jsonOut(['ok'=>true,'removed'=>$removed,'total'=>count($songs)]);
+    }
+
+    // ── Duplicate playlist ──
+    if($act==='duplicate_pl'){
+        needAuth();
+        $pls=loadPlaylists();
+        $srcId=trim($_POST['src_pl']??'');
+        $newName=trim($_POST['name']??'');
+        $srcPl=null;
+        foreach($pls as $p) if($p['id']===$srcId){ $srcPl=$p; break; }
+        if(!$srcPl) jsonOut(['ok'=>false,'error'=>'Lista não encontrada.']);
+        if(!$newName) $newName=$srcPl['name'].' (cópia)';
+        $newId=newPlId();
+        $newPl=['id'=>$newId,'name'=>$newName,'spotify_id'=>'','is_default'=>false];
+        $pls[]=$newPl;
+        savePlaylists($pls);
+        $songs=loadSongs($srcPl);
+        saveSongs($newPl,$songs);
+        jsonOut(['ok'=>true,'id'=>$newId,'name'=>$newName,'track_count'=>count($songs)]);
+    }
+
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
     // ── Reorder playlists ──
     if($act==='reorder_pls'){
         needAuth();
@@ -1102,7 +1199,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .pl-act-btn svg{width:11px;height:11px}
 
 /* drag handle in sidebar */
-.pl-order-btns{display:flex;flex-direction:column;gap:0;flex-shrink:0}
+.pl-drag-handle{cursor:grab;color:var(--text3);padding:0 3px 0 2px;opacity:0;transition:opacity var(--tr);display:flex;align-items:center;flex-shrink:0}
+.pl-drag-handle:active{cursor:grabbing}
+.pl-item:hover .pl-drag-handle{opacity:1}
+#plSortable .ui-sortable-helper{background:var(--bg3)!important;box-shadow:0 6px 24px rgba(0,0,0,.5);border-radius:var(--r);opacity:.97}
+#plSortable .ui-sortable-placeholder{visibility:visible!important;background:var(--accent-dim)!important;border:1px dashed var(--accent-glow)!important;border-radius:var(--r);margin:1px 0}
 .pl-name-btn{background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:7px;flex:1;min-width:0;padding:0;color:inherit;font:inherit;text-align:left}
 
 .sb-bottom{padding:8px 10px 14px;border-top:1px solid var(--border);flex-shrink:0;margin-top:auto}
@@ -1317,6 +1418,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 }
 
 @media print{
+<<<<<<< HEAD
   /* Hide everything except what we want */
   .sidebar,.topbar,.search-row,.td-actions,.td-cifra,.td-spot,
   .btn,.hamburger,.sb-backdrop,.modal-overlay,.stats-row,.ron,
@@ -1327,12 +1429,27 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   /* Page layout */
   @page{margin:1.4cm 1.6cm;size:A4 portrait}
   body{background:#fff!important;color:#111!important;font-family:'DM Sans',sans-serif!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+=======
+  /* Force white on everything */
+  *{background:#fff!important;color:#111!important;box-shadow:none!important;text-shadow:none!important}
+
+  /* Hide chrome */
+  .sidebar,.topbar,.search-row,.td-actions,.td-cifra,.td-spot,
+  .btn,.hamburger,.sb-backdrop,.modal-overlay,.stats-row,.ron,
+  .cp-toast{display:none!important}
+  th:nth-child(1),td:nth-child(1){display:none!important}
+  .badge{display:none!important}
+
+  @page{margin:1.4cm 1.6cm;size:A4 portrait}
+  body{font-family:'DM Sans',sans-serif!important}
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   .main{margin-left:0!important}
   .content{padding:0!important}
 
   /* Print header */
   .print-header{display:block!important;margin-bottom:18px}
 
+<<<<<<< HEAD
   /* Stat cards row */
   .print-stats{display:flex!important;gap:10px;margin-bottom:18px}
   .print-stat-card{
@@ -1351,10 +1468,29 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     padding:5px 10px 5px;border-bottom:1.5px solid #111;font-weight:600
   }
   /* Number col */
+=======
+  /* Stat cards — only 2: Temas + Duração */
+  .print-stats{display:flex!important;gap:10px;margin-bottom:18px;max-width:340px}
+  .print-stat-card{
+    flex:1;border:1.5px solid #ccc!important;border-radius:10px;
+    padding:10px 14px 8px;text-align:left
+  }
+  .print-stat-num{font-family:'DM Mono',monospace;font-size:1.5rem;font-weight:700;color:#111!important;line-height:1;display:block}
+  .print-stat-label{font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;color:#888!important;margin-top:3px;display:block}
+
+  /* Table */
+  .table-wrap{border:none!important;border-radius:0!important}
+  table{width:100%;border-collapse:collapse}
+  thead th{
+    color:#aaa!important;font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;
+    padding:5px 10px;border-bottom:1.5px solid #111!important;font-weight:600;border-top:none!important
+  }
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   thead th.th-num,tbody td.td-num{
     width:36px;text-align:right;padding-right:14px;
     font-family:'DM Mono',monospace;font-size:.75rem;color:#aaa!important
   }
+<<<<<<< HEAD
   /* Title */
   thead th.th-title{font-size:.55rem}
   tbody td.td-title{font-size:.85rem;font-weight:500;color:#111!important;padding:6px 10px}
@@ -1382,11 +1518,30 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   body.print-1page .print-stat-num{font-size:1.15rem}
 
   /* Normal mode */
+=======
+  tbody td.td-title{font-size:.85rem;font-weight:500;padding:6px 10px}
+  tbody td.td-artist{font-size:.78rem;color:#555!important;padding:6px 10px}
+  .td-dur-print{display:table-cell!important}
+  .th-dur-print{display:table-cell!important}
+  tbody td.td-dur-print{font-family:'DM Mono',monospace;font-size:.72rem;color:#999!important;text-align:right;padding-right:4px;white-space:nowrap}
+  thead th.th-dur-print{font-size:.55rem;text-align:right;padding-right:4px}
+  tbody tr{border-bottom:1px solid #eee!important}
+  tbody tr:last-child td{border-bottom:none!important}
+
+  body.print-1page thead th{padding:3px 8px;font-size:.48rem}
+  body.print-1page tbody td{font-size:.78rem;padding:3px 8px}
+  body.print-1page .print-header h2{font-size:14pt}
+  body.print-1page .print-stat-num{font-size:1.15rem}
+
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   body.print-2page thead th{padding:5px 10px;font-size:.55rem}
   body.print-2page tbody td.td-title{font-size:.9rem;padding:7px 10px}
   body.print-2page tbody td.td-artist{font-size:.82rem;padding:7px 10px}
   body.print-2page .print-header h2{font-size:17pt}
+<<<<<<< HEAD
   body.print-2page .print-header p{font-size:8pt}
+=======
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
 }
 
 /* print header (hidden on screen) */
@@ -1405,6 +1560,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .print-opt-btn .pob-label{font-weight:600;display:block}
 .print-opt-btn .pob-sub{font-size:.68rem;color:var(--text3);display:block;margin-top:2px}
 
+<<<<<<< HEAD
 /* ── Context menu ───────────────────────────────────────────── */
 #songCtxMenu {
   position: fixed;
@@ -1464,6 +1620,56 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   margin: 4px 0;
 }
 .song-row { user-select: none; }
+=======
+/* context menu removed — replaced by bulk selection bar */
+.song-row { user-select: none; }
+.song-row.is-selected { background: color-mix(in srgb, var(--accent) 10%, transparent)!important; }
+.song-row.is-selected td { background: transparent!important; }
+.song-check { opacity: .35; transition: opacity .15s; }
+.song-row:hover .song-check, .song-check:checked { opacity: 1; }
+#thCheckAll { opacity: .5; }
+#thCheckAll:has(#checkAll:checked),
+#thCheckAll:has(#checkAll:indeterminate) { opacity: 1; }
+#bulkBar {
+  display: none;
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.55);
+  padding: 10px 12px;
+  align-items: center;
+  gap: 8px;
+  z-index: 500;
+  white-space: nowrap;
+  font-size: .78rem;
+  min-width: 360px;
+  max-width: 92vw;
+  animation: bulkSlideUp .2s ease;
+}
+#bulkBar.visible { display: flex; }
+#bulkCount {
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 64px;
+  flex-shrink: 0;
+}
+#bulkDestSel {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: .76rem;
+  min-width: 0;
+}
+@keyframes bulkSlideUp { from { opacity:0; transform:translateX(-50%) translateY(14px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
 
 </style>
 </head>
@@ -1486,19 +1692,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       ?>
       <li data-id="<?= htmlspecialchars($pl['id']) ?>">
         <div class="pl-item <?= $isAct?'active':'' ?>">
-          <span class="pl-order-btns">
-            <?php if($idx>0): ?>
-            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',-1)" title="Mover para cima">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-            </span>
-            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg></span>
-            <?php endif; ?>
-            <?php if($idx<count($playlists)-1): ?>
-            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',1)" title="Mover para baixo">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-            </span>
-            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></span>
-            <?php endif; ?>
+          <span class="pl-drag-handle" title="Arrastar para reordenar">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
           </span>
           <button class="pl-name-btn" onclick="switchPl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>')">
             <span class="pl-dot"></span>
@@ -1516,6 +1711,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <?php endif; ?>
             <span class="pl-act-btn" onclick="openEditPlModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['spotify_id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Editar">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </span>
+            <span class="pl-act-btn" onclick="duplicatePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Duplicar lista">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </span>
             <?php if(count($playlists)>1): ?>
             <span class="pl-act-btn danger" onclick="deletePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Remover">
@@ -1658,6 +1856,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="print-stats" style="display:none" id="printStatsRow">
       <div class="print-stat-card">
         <span class="print-stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></span>
+<<<<<<< HEAD
         <span class="print-stat-label">Músicas</span>
       </div>
       <div class="print-stat-card">
@@ -1667,6 +1866,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <div class="print-stat-card">
         <span class="print-stat-num">00</span>
         <span class="print-stat-label">Com Cifra</span>
+=======
+        <span class="print-stat-label">Temas</span>
+>>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
       </div>
       <div class="print-stat-card">
         <span class="print-stat-num" style="font-size:1.1rem;letter-spacing:-.02em"><?= $durStr ?: '—' ?></span>
@@ -1703,6 +1905,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <thead>
           <tr>
             <th style="width:34px"></th>
+            <th style="width:28px;padding:0 4px 0 8px" id="thCheckAll" title="Selecionar todas">
+              <input type="checkbox" id="checkAll" style="accent-color:var(--accent);cursor:pointer;margin:0">
+            </th>
             <th class="td-num">#</th>
             <th>Título</th>
             <th>Artista / Compositor</th>
@@ -1730,6 +1935,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
               <span class="drag-handle">
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
               </span>
+            </td>
+            <td style="padding:0 4px 0 8px">
+              <input type="checkbox" class="song-check" data-i="<?= $i ?>" style="accent-color:var(--accent);cursor:pointer;margin:0">
             </td>
             <td class="td-num"><?= str_pad($i+1,2,'0',STR_PAD_LEFT) ?></td>
             <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
@@ -2167,6 +2375,28 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 <div class="cp-toast" id="cpToast">Copiado ✓</div>
 
+<!-- Bulk action bar (floating, appears when songs are selected) -->
+<div id="bulkBar">
+  <span id="bulkCount">0</span>
+  <select id="bulkDestSel">
+    <option value="">— Lista destino —</option>
+  </select>
+  <button id="bulkCopyBtn" class="btn btn-outline" style="font-size:.72rem;padding:5px 11px;flex-shrink:0">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    Copiar
+  </button>
+  <button id="bulkMoveBtn" class="btn btn-outline" style="font-size:.72rem;padding:5px 11px;flex-shrink:0">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+    Mover
+  </button>
+  <div style="width:1px;height:20px;background:var(--border2);flex-shrink:0"></div>
+  <button id="bulkDeleteBtn" class="btn btn-danger" style="font-size:.72rem;padding:5px 11px;flex-shrink:0">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+    Excluir
+  </button>
+  <button id="bulkCancelBtn" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:.9rem;padding:4px 8px;flex-shrink:0;line-height:1" title="Cancelar seleção">✕</button>
+</div>
+
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
 <script>
@@ -2287,6 +2517,39 @@ $(function(){
       post({_action:'reorder_songs', order:JSON.stringify(ids)}, function(){
         showSaving(); hideSaving(); renumber();
       });
+    }
+  });
+});
+
+// ── Sidebar playlist drag reorder ──────────────────────────────
+$(function(){
+  $('#plSortable').sortable({
+    handle: '.pl-drag-handle',
+    axis: 'y',
+    tolerance: 'pointer',
+    placeholder: 'ui-sortable-placeholder',
+    start: function(e, ui){
+      if(LOCKED && !AUTHED){
+        $('#plSortable').sortable('cancel');
+        guardedAction(function(){});
+        return false;
+      }
+      // Fix placeholder height to match dragged item
+      ui.placeholder.height(ui.item.height());
+    },
+    update: function(){
+      var ids = $('#plSortable li').map(function(){ return $(this).data('id'); }).get();
+      $.post('?pl='+PL_ID, {_action:'reorder_pls', order:JSON.stringify(ids), pl:PL_ID}, function(r){
+        if(r.ok){
+          // Update padrão badge: only first item gets it
+          $('#plSortable li').each(function(i){
+            $(this).find('.pl-def-badge').remove();
+            if(i===0){
+              $(this).find('.pl-name-text').after('<span class="pl-def-badge">padrão</span>');
+            }
+          });
+        }
+      }, 'json');
     }
   });
 });
@@ -3137,6 +3400,141 @@ $('#copyListBtnM').on('click', function(){ closeOverflow(); $('#copyListBtn').tr
 
 // ── Utility ────────────────────────────────────────────────────
 function escH(s){ return $('<span>').text(s).html(); }
+
+// ═══════════════════════════════════════════════════════════════
+// BULK SELECTION — checkbox select + copy/move/delete in bulk
+// ═══════════════════════════════════════════════════════════════
+function getSelectedIndices(){
+  return $('.song-check:checked').map(function(){ return parseInt($(this).data('i')); }).get();
+}
+
+function updateBulkBar(){
+  var sel = getSelectedIndices();
+  var n = sel.length;
+  if(n === 0){
+    $('#bulkBar').removeClass('visible');
+    $('#checkAll').prop('checked',false).prop('indeterminate',false);
+  } else {
+    var total = $('.song-check').length;
+    $('#checkAll').prop('indeterminate', n>0 && n<total).prop('checked', n===total);
+    $('#bulkCount').text(n + (n===1?' música':' músicas'));
+    $('#bulkBar').addClass('visible');
+  }
+}
+
+function populateBulkDest(){
+  var otherPls = ALL_PLS.filter(function(p){ return p.id !== PL_ID; });
+  var html = '<option value="">— Lista destino —</option>';
+  otherPls.forEach(function(p){
+    html += '<option value="'+escH(p.id)+'">'+escH(p.name)+'</option>';
+  });
+  $('#bulkDestSel').html(html);
+}
+
+function bulkAction(action){
+  var indices = getSelectedIndices();
+  var destId  = $('#bulkDestSel').val();
+  if(!indices.length){ toast('Seleciona pelo menos uma música.'); return; }
+  if(!destId){ toast('Escolhe a lista destino.'); $('#bulkDestSel').focus(); return; }
+  var destName = $('#bulkDestSel option:selected').text();
+  guardedAction(function(){
+    var btn = action==='copy' ? $('#bulkCopyBtn') : $('#bulkMoveBtn');
+    btn.prop('disabled',true);
+    $.post('?pl='+PL_ID, {
+      _action: action==='copy' ? 'copy_songs_bulk' : 'move_songs_bulk',
+      dest_pl: destId,
+      indices: JSON.stringify(indices)
+    }, function(r){
+      btn.prop('disabled',false);
+      if(r.ok){
+        var msg = action==='copy'
+          ? r.added+' música'+(r.added===1?' copiada':' copiadas')+' para "'+destName+'"'+(r.skipped?' ('+r.skipped+' já existiam)':'')+'.'
+          : r.added+' música'+(r.added===1?' movida':' movidas')+' para "'+destName+'"'+(r.skipped?' ('+r.skipped+' já existiam)':'')+'.' ;
+        toast(msg);
+        setTimeout(function(){ window.location.reload(); }, 900);
+      } else { alert(r.error||'Erro.'); }
+    },'json').fail(function(){ btn.prop('disabled',false); alert('Erro de rede.'); });
+  });
+}
+
+$(function(){
+  // Init destination select after DOM ready
+  populateBulkDest();
+
+  $('#checkAll').on('change', function(){
+    var checked = this.checked;
+    $('.song-check').prop('checked', checked);
+    $('.song-row').toggleClass('is-selected', checked);
+    updateBulkBar();
+  });
+
+  $(document).on('change', '.song-check', function(){
+    $(this).closest('.song-row').toggleClass('is-selected', this.checked);
+    updateBulkBar();
+  });
+
+  // Click anywhere on checkbox cell to toggle
+  $(document).on('click', '.song-row td:nth-child(2)', function(e){
+    if($(e.target).is('input')) return;
+    var cb = $(this).find('.song-check');
+    cb.prop('checked', !cb.prop('checked')).trigger('change');
+  });
+
+  $('#bulkCancelBtn').on('click', function(){
+    $('.song-check').prop('checked', false);
+    $('.song-row').removeClass('is-selected');
+    $('#checkAll').prop('checked',false).prop('indeterminate',false);
+    updateBulkBar();
+  });
+
+  $(document).on('keydown', function(e){
+    if(e.key==='Escape' && $('#bulkBar').hasClass('visible')) $('#bulkCancelBtn').trigger('click');
+  });
+
+  $('#bulkCopyBtn').on('click', function(){ bulkAction('copy'); });
+  $('#bulkMoveBtn').on('click', function(){ bulkAction('move'); });
+
+  $('#bulkDeleteBtn').on('click', function(){
+    var indices = getSelectedIndices();
+    if(!indices.length) return;
+    if(!confirm('Excluir ' + indices.length + ' música' + (indices.length===1?'':'s') + ' desta lista?')) return;
+    guardedAction(function(){
+      $('#bulkDeleteBtn').prop('disabled',true);
+      $.post('?pl='+PL_ID, {
+        _action: 'delete_songs_bulk',
+        indices: JSON.stringify(indices)
+      }, function(r){
+        $('#bulkDeleteBtn').prop('disabled',false);
+        if(r.ok){
+          toast(r.removed + ' música'+(r.removed===1?' excluída':' excluídas')+'.');
+          setTimeout(function(){ window.location.reload(); }, 700);
+        } else { alert(r.error||'Erro ao excluir.'); }
+      },'json').fail(function(){ $('#bulkDeleteBtn').prop('disabled',false); alert('Erro de rede.'); });
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// DUPLICATE PLAYLIST
+// ═══════════════════════════════════════════════════════════════
+function duplicatePl(id, name) {
+  guardedAction(function(){
+    var newName = prompt('Nome da lista duplicada:', name + ' (cópia)');
+    if(newName === null) return; // cancelled
+    if(!newName.trim()) newName = name + ' (cópia)';
+    $.post('?pl='+PL_ID, {_action:'duplicate_pl', src_pl:id, name:newName.trim()}, function(r){
+      if(r.ok){
+        toast('Lista "'+r.name+'" criada com '+r.track_count+' músicas.');
+        setTimeout(function(){ window.location.reload(); }, 900);
+      } else {
+        alert(r.error||'Erro ao duplicar.');
+      }
+    }, 'json').fail(function(){ alert('Erro de rede.'); });
+  });
+}
+
+
 </script>
+
 </body>
 </html>
