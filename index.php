@@ -1196,7 +1196,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .pl-act-btn svg{width:11px;height:11px}
 
 /* drag handle in sidebar */
-.pl-order-btns{display:flex;flex-direction:column;gap:0;flex-shrink:0}
+.pl-drag-handle{cursor:grab;color:var(--text3);padding:0 3px 0 2px;opacity:0;transition:opacity var(--tr);display:flex;align-items:center;flex-shrink:0}
+.pl-drag-handle:active{cursor:grabbing}
+.pl-item:hover .pl-drag-handle{opacity:1}
+#plSortable .ui-sortable-helper{background:var(--bg3)!important;box-shadow:0 6px 24px rgba(0,0,0,.5);border-radius:var(--r);opacity:.97}
+#plSortable .ui-sortable-placeholder{visibility:visible!important;background:var(--accent-dim)!important;border:1px dashed var(--accent-glow)!important;border-radius:var(--r);margin:1px 0}
 .pl-name-btn{background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:7px;flex:1;min-width:0;padding:0;color:inherit;font:inherit;text-align:left}
 
 .sb-bottom{padding:8px 10px 14px;border-top:1px solid var(--border);flex-shrink:0;margin-top:auto}
@@ -1555,19 +1559,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       ?>
       <li data-id="<?= htmlspecialchars($pl['id']) ?>">
         <div class="pl-item <?= $isAct?'active':'' ?>">
-          <span class="pl-order-btns">
-            <?php if($idx>0): ?>
-            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',-1)" title="Mover para cima">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-            </span>
-            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg></span>
-            <?php endif; ?>
-            <?php if($idx<count($playlists)-1): ?>
-            <span class="pl-act-btn" onclick="movePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>',1)" title="Mover para baixo">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-            </span>
-            <?php else: ?><span class="pl-act-btn" style="opacity:.15;pointer-events:none"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></span>
-            <?php endif; ?>
+          <span class="pl-drag-handle" title="Arrastar para reordenar">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
           </span>
           <button class="pl-name-btn" onclick="switchPl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>')">
             <span class="pl-dot"></span>
@@ -2379,6 +2372,39 @@ $(function(){
       post({_action:'reorder_songs', order:JSON.stringify(ids)}, function(){
         showSaving(); hideSaving(); renumber();
       });
+    }
+  });
+});
+
+// ── Sidebar playlist drag reorder ──────────────────────────────
+$(function(){
+  $('#plSortable').sortable({
+    handle: '.pl-drag-handle',
+    axis: 'y',
+    tolerance: 'pointer',
+    placeholder: 'ui-sortable-placeholder',
+    start: function(e, ui){
+      if(LOCKED && !AUTHED){
+        $('#plSortable').sortable('cancel');
+        guardedAction(function(){});
+        return false;
+      }
+      // Fix placeholder height to match dragged item
+      ui.placeholder.height(ui.item.height());
+    },
+    update: function(){
+      var ids = $('#plSortable li').map(function(){ return $(this).data('id'); }).get();
+      $.post('?pl='+PL_ID, {_action:'reorder_pls', order:JSON.stringify(ids), pl:PL_ID}, function(r){
+        if(r.ok){
+          // Update padrão badge: only first item gets it
+          $('#plSortable li').each(function(i){
+            $(this).find('.pl-def-badge').remove();
+            if(i===0){
+              $(this).find('.pl-name-text').after('<span class="pl-def-badge">padrão</span>');
+            }
+          });
+        }
+      }, 'json');
     }
   });
 });
