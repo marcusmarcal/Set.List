@@ -584,8 +584,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'dest_name'=>$destPl['name'],'src_total'=>count($songs),'already_existed'=>$alreadyExists]);
     }
 
-<<<<<<< HEAD
-=======
     // ── Bulk copy songs to another playlist ──
     if($act==='copy_songs_bulk'){
         needAuth();
@@ -680,7 +678,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'id'=>$newId,'name'=>$newName,'track_count'=>count($songs)]);
     }
 
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
     // ── Reorder playlists ──
     if($act==='reorder_pls'){
         needAuth();
@@ -1378,18 +1375,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 }
 
 @media print{
-<<<<<<< HEAD
-  /* Hide everything except what we want */
-  .sidebar,.topbar,.search-row,.td-actions,.td-cifra,.td-spot,
-  .btn,.hamburger,.sb-backdrop,.modal-overlay,.stats-row,.ron,
-  .cp-toast,#songCtxMenu{display:none!important}
-  th:nth-child(1),td:nth-child(1){display:none!important} /* drag handle col */
-  .badge{display:none!important}
-
-  /* Page layout */
-  @page{margin:1.4cm 1.6cm;size:A4 portrait}
-  body{background:#fff!important;color:#111!important;font-family:'DM Sans',sans-serif!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-=======
   /* Force white on everything */
   *{background:#fff!important;color:#111!important;box-shadow:none!important;text-shadow:none!important}
 
@@ -1402,33 +1387,12 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
   @page{margin:1.4cm 1.6cm;size:A4 portrait}
   body{font-family:'DM Sans',sans-serif!important}
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   .main{margin-left:0!important}
   .content{padding:0!important}
 
   /* Print header */
   .print-header{display:block!important;margin-bottom:18px}
 
-<<<<<<< HEAD
-  /* Stat cards row */
-  .print-stats{display:flex!important;gap:10px;margin-bottom:18px}
-  .print-stat-card{
-    flex:1;border:1.5px solid #ccc;border-radius:10px;
-    padding:10px 14px 8px;text-align:left
-  }
-  .print-stat-num{font-family:'DM Mono',monospace;font-size:1.5rem;font-weight:700;color:#111;line-height:1;display:block}
-  .print-stat-label{font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;color:#888;margin-top:3px;display:block}
-
-  /* Table */
-  .table-wrap{border:none!important;border-radius:0!important;box-shadow:none!important}
-  table{width:100%;border-collapse:collapse}
-  thead th{
-    background:#fff!important;color:#aaa!important;
-    font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;
-    padding:5px 10px 5px;border-bottom:1.5px solid #111;font-weight:600
-  }
-  /* Number col */
-=======
   /* Stat cards — only 2: Temas + Duração */
   .print-stats{display:flex!important;gap:10px;margin-bottom:18px;max-width:340px}
   .print-stat-card{
@@ -1445,40 +1409,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     color:#aaa!important;font-size:.55rem;letter-spacing:.13em;text-transform:uppercase;
     padding:5px 10px;border-bottom:1.5px solid #111!important;font-weight:600;border-top:none!important
   }
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   thead th.th-num,tbody td.td-num{
     width:36px;text-align:right;padding-right:14px;
     font-family:'DM Mono',monospace;font-size:.75rem;color:#aaa!important
   }
-<<<<<<< HEAD
-  /* Title */
-  thead th.th-title{font-size:.55rem}
-  tbody td.td-title{font-size:.85rem;font-weight:500;color:#111!important;padding:6px 10px}
-  /* Artist */
-  thead th.th-artist{font-size:.55rem}
-  tbody td.td-artist{font-size:.78rem;color:#555!important;padding:6px 10px}
-  /* Duration */
-  .td-dur-print{display:table-cell!important}
-  .th-dur-print{display:table-cell!important}
-  tbody td.td-dur-print{
-    font-family:'DM Mono',monospace;font-size:.72rem;color:#999!important;
-    text-align:right;padding-right:4px;white-space:nowrap
-  }
-  thead th.th-dur-print{font-size:.55rem;text-align:right;padding-right:4px}
-
-  tbody tr{border-bottom:1px solid #eee}
-  tbody tr:last-child td{border-bottom:none}
-
-  /* Compact mode */
-  body.print-1page thead th{padding:3px 8px;font-size:.48rem}
-  body.print-1page tbody td.td-title{font-size:.78rem;padding:3px 8px}
-  body.print-1page tbody td.td-artist{font-size:.72rem;padding:3px 8px}
-  body.print-1page .print-header h2{font-size:14pt}
-  body.print-1page .print-header p{font-size:7pt}
-  body.print-1page .print-stat-num{font-size:1.15rem}
-
-  /* Normal mode */
-=======
   tbody td.td-title{font-size:.85rem;font-weight:500;padding:6px 10px}
   tbody td.td-artist{font-size:.78rem;color:#555!important;padding:6px 10px}
   .td-dur-print{display:table-cell!important}
@@ -1493,15 +1427,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   body.print-1page .print-header h2{font-size:14pt}
   body.print-1page .print-stat-num{font-size:1.15rem}
 
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
   body.print-2page thead th{padding:5px 10px;font-size:.55rem}
   body.print-2page tbody td.td-title{font-size:.9rem;padding:7px 10px}
   body.print-2page tbody td.td-artist{font-size:.82rem;padding:7px 10px}
   body.print-2page .print-header h2{font-size:17pt}
-<<<<<<< HEAD
-  body.print-2page .print-header p{font-size:8pt}
-=======
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
 }
 
 /* print header (hidden on screen) */
@@ -1520,67 +1449,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .print-opt-btn .pob-label{font-weight:600;display:block}
 .print-opt-btn .pob-sub{font-size:.68rem;color:var(--text3);display:block;margin-top:2px}
 
-<<<<<<< HEAD
-/* ── Context menu ───────────────────────────────────────────── */
-#songCtxMenu {
-  position: fixed;
-  z-index: 9999;
-  background: var(--bg2);
-  border: 1px solid var(--border2);
-  border-radius: var(--r);
-  box-shadow: 0 8px 24px rgba(0,0,0,.45);
-  padding: 5px 0;
-  min-width: 210px;
-  font-size: .8rem;
-  display: none;
-  user-select: none;
-}
-#songCtxMenu .ctx-header {
-  padding: 7px 14px 5px;
-  font-size: .68rem;
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--text3);
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 200px;
-}
-#songCtxMenu .ctx-section {
-  padding: 4px 0 2px;
-  font-size: .65rem;
-  font-weight: 700;
-  letter-spacing: .07em;
-  text-transform: uppercase;
-  color: var(--text3);
-  padding-left: 14px;
-  margin-top: 4px;
-}
-#songCtxMenu .ctx-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 14px;
-  cursor: pointer;
-  color: var(--text);
-  transition: background var(--tr);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#songCtxMenu .ctx-item:hover { background: var(--bg3); }
-#songCtxMenu .ctx-item svg { flex-shrink: 0; opacity: .7; }
-#songCtxMenu .ctx-item.ctx-danger { color: var(--danger); }
-#songCtxMenu .ctx-sep {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 4px 0;
-}
-.song-row { user-select: none; }
-=======
 /* context menu removed — replaced by bulk selection bar */
 .song-row { user-select: none; }
 .song-row.is-selected { background: color-mix(in srgb, var(--accent) 10%, transparent)!important; }
@@ -1629,7 +1497,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   min-width: 0;
 }
 @keyframes bulkSlideUp { from { opacity:0; transform:translateX(-50%) translateY(14px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
 
 </style>
 </head>
@@ -1808,19 +1675,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="print-stats" style="display:none" id="printStatsRow">
       <div class="print-stat-card">
         <span class="print-stat-num"><?= str_pad($totalSongs,2,'0',STR_PAD_LEFT) ?></span>
-<<<<<<< HEAD
-        <span class="print-stat-label">Músicas</span>
-      </div>
-      <div class="print-stat-card">
-        <span class="print-stat-num"><?= str_pad($artistCount,2,'0',STR_PAD_LEFT) ?></span>
-        <span class="print-stat-label">Artistas</span>
-      </div>
-      <div class="print-stat-card">
-        <span class="print-stat-num">00</span>
-        <span class="print-stat-label">Com Cifra</span>
-=======
         <span class="print-stat-label">Temas</span>
->>>>>>> 6ce03e1230151c2f1609f721b286c7e70851be73
       </div>
       <div class="print-stat-card">
         <span class="print-stat-num" style="font-size:1.1rem;letter-spacing:-.02em"><?= $durStr ?: '—' ?></span>
