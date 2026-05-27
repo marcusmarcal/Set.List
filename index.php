@@ -117,12 +117,20 @@ function sortSongs($songs, $col, $ord='asc') {
 }
 
 function cleanTitle($t) {
+    // Suffix keywords that indicate a variant (not part of the core title)
     $kw = 'live|ao vivo|remaster(?:ed)?(?:\s+\d{4})?|\d{4}\s+remaster(?:ed)?|\d{4}[\w\s\-]*mix'
         . '|bonus track|explicit|radio edit|single version|album version|deluxe|acoustic'
-        . '|demo|instrumental|extended|intro|outro';
+        . '|demo|instrumental|extended|intro|outro|version|versão|mix|edit|reprise'
+        . '|in\s+\w+|at\s+\w+|from\s+\w+'; // e.g. "Live In Berlin", "Live At Wembley"
+    // Remove (...) / [...] blocks that contain any keyword
     $t = preg_replace('/\s*[\(\[]\s*(?:'.$kw.')[^\)\]]*[\)\]]/iu', '', $t);
-    $t = preg_replace('/\s+-\s+(?:'.$kw.').*/iu', '', $t);
+    // Remove everything after " - keyword..." or " – keyword..."
+    $t = preg_replace('/\s+[–\-]\s+(?:'.$kw.').*/iu', '', $t);
+    // Remove trailing year-remaster pattern
     $t = preg_replace('/\s*-\s*\d{4}\s+remaster(?:ed)?\s*$/iu', '', $t);
+    // Collapse multiple artists separated by / or ; keeping only first song title
+    // e.g. "Metamorfose Ambulante / Anna Júlia" — if both parts look like song titles, keep first
+    // (Only strip if second part is short and looks like a title, not an artist)
     return trim($t);
 }
 
@@ -240,10 +248,13 @@ function spotTracks($tok,$plId) {
         foreach($d['items'] as $item) {
             $t=$item['track']??null;
             if(!$t||empty($t['name'])) continue;
-            $songs[]=['title'=>cleanTitle($t['name']),'artist'=>$t['artists'][0]['name']??'',
+            $rawName = $t['name'];
+            $songs[]=['title'=>$rawName,'title_display'=>cleanTitle($rawName),
+                      'artist'=>$t['artists'][0]['name']??'',
                       'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
                       'duration_ms'=>(int)($t['duration_ms']??0),
-                      'spotify_url'=>$t['external_urls']['spotify']??''];
+                      'spotify_url'=>$t['external_urls']['spotify']??'',
+                      'spotify_uri'=>$t['uri']??''];
         }
         $url=$d['next']??null;
     }
@@ -326,7 +337,7 @@ function spotUserId($tok) {
 
 // Get track IDs currently in a Spotify playlist
 function spotPlaylistTrackUris($tok,$plId) {
-    $uris=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100&fields=next,items(track(uri,name,artists))";
+    $uris=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100&fields=next,items(track(uri,name,duration_ms,artists))";
     while($url) {
         $ch=curl_init($url);
         curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>20]);
@@ -334,7 +345,11 @@ function spotPlaylistTrackUris($tok,$plId) {
         if(empty($d['items'])) break;
         foreach($d['items'] as $item) {
             $t=$item['track']??null;
-            if($t&&!empty($t['uri'])) $uris[$t['uri']]=['name'=>$t['name']??'','artist'=>$t['artists'][0]['name']??''];
+            if($t&&!empty($t['uri'])) $uris[$t['uri']]=[
+                'name'        => $t['name']??'',
+                'artist'      => $t['artists'][0]['name']??'',
+                'duration_ms' => (int)($t['duration_ms']??0),
+            ];
         }
         $url=$d['next']??null;
     }
@@ -360,13 +375,65 @@ function spotRemoveTracks($tok,$plId,$uris) {
     }
 }
 
-// Search Spotify for a track URI by title+artist
+// Search Spotify for a track URI by title+artist — returns most popular result
 function spotSearchTrack($tok,$title,$artist) {
-    $q=urlencode("track:$title artist:$artist");
-    $ch=curl_init("https://api.spotify.com/v1/search?q=$q&type=track&limit=1");
+    // First try strict search: track: + artist:
+    $cleanT = cleanTitle($title);
+    $q = urlencode('track:'.$cleanT.($artist ? ' artist:'.$artist : ''));
+    $ch=curl_init("https://api.spotify.com/v1/search?q=$q&type=track&limit=10");
     curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
     $d=json_decode(curl_exec($ch),true); curl_close($ch);
-    return $d['tracks']['items'][0]['uri'] ?? null;
+    $items = $d['tracks']['items'] ?? [];
+
+    // If strict search returned nothing, fallback to free text
+    if(empty($items)){
+        $q2 = urlencode($cleanT.($artist ? ' '.$artist : ''));
+        $ch=curl_init("https://api.spotify.com/v1/search?q=$q2&type=track&limit=10");
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+        $d=json_decode(curl_exec($ch),true); curl_close($ch);
+        $items = $d['tracks']['items'] ?? [];
+    }
+    if(empty($items)) return null;
+
+    // Prefer non-live, non-remaster versions; among those, pick highest popularity
+    $preferred = array_filter($items, function($t){
+        $name = strtolower($t['name']??'');
+        return !preg_match('/live|ao vivo|remaster|remix|acoustic|version/i', $name);
+    });
+    $pool = count($preferred) ? array_values($preferred) : $items;
+    usort($pool, function($a,$b){ return ($b['popularity']??0) <=> ($a['popularity']??0); });
+    return $pool[0]['uri'] ?? null;
+}
+
+// Same as above but also returns full track metadata for enriching local song data
+function spotSearchTrackFull($tok,$title,$artist) {
+    $cleanT = cleanTitle($title);
+    $q = urlencode('track:'.$cleanT.($artist ? ' artist:'.$artist : ''));
+    $ch=curl_init("https://api.spotify.com/v1/search?q=$q&type=track&limit=10");
+    curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+    $d=json_decode(curl_exec($ch),true); curl_close($ch);
+    $items = $d['tracks']['items'] ?? [];
+    if(empty($items)){
+        $q2 = urlencode($cleanT.($artist ? ' '.$artist : ''));
+        $ch=curl_init("https://api.spotify.com/v1/search?q=$q2&type=track&limit=10");
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
+        $d=json_decode(curl_exec($ch),true); curl_close($ch);
+        $items = $d['tracks']['items'] ?? [];
+    }
+    if(empty($items)) return null;
+    $preferred = array_filter($items, function($t){
+        return !preg_match('/live|ao vivo|remaster|remix|acoustic|version/i', $t['name']??'');
+    });
+    $pool = count($preferred) ? array_values($preferred) : $items;
+    usort($pool, function($a,$b){ return ($b['popularity']??0) <=> ($a['popularity']??0); });
+    $t = $pool[0];
+    return [
+        'uri'         => $t['uri'],
+        'spotify_url' => $t['external_urls']['spotify'] ?? '',
+        'artist'      => $t['artists'][0]['name'] ?? '',
+        'duration_ms' => (int)($t['duration_ms'] ?? 0),
+        'popularity'  => $t['popularity'] ?? 0,
+    ];
 }
 
 
@@ -385,8 +452,41 @@ function fmtMs($ms){
 }
 
 // ── Utility: normalised key for track matching ─────────────────
-function trackMatchKey($title,$artist){
-    return strtolower(preg_replace('/[^a-z0-9]/i','',($title??'').($artist??'')));
+function trackMatchKey($title, $artist) {
+    // Clean variant suffixes from title
+    $title = cleanTitle($title ?? '');
+    // Normalise: lowercase, remove accents, strip non-alphanumeric
+    $norm = function($s) {
+        $s = mb_strtolower($s, 'UTF-8');
+        $map = ['á'=>'a','à'=>'a','ã'=>'a','â'=>'a','ä'=>'a',
+                'é'=>'e','ê'=>'e','ë'=>'e','è'=>'e',
+                'í'=>'i','î'=>'i','ï'=>'i','ì'=>'i',
+                'ó'=>'o','ô'=>'o','õ'=>'o','ö'=>'o','ò'=>'o',
+                'ú'=>'u','û'=>'u','ü'=>'u','ù'=>'u',
+                'ç'=>'c','ñ'=>'n','ý'=>'y'];
+        $s = strtr($s, $map);
+        return preg_replace('/[^a-z0-9]/i', '', $s);
+    };
+    $tNorm = $norm($title);
+    // Use only the first "word token" of the artist to survive
+    // "Leviano" vs "Leviano, saboya, Qualywav1, OG Bahia"
+    $artistFirst = preg_split('/[\s,;&\/]+/', trim($artist ?? ''), 2)[0];
+    $aNorm = $norm($artistFirst);
+    return $tNorm . '||' . $aNorm;
+}
+
+// Secondary key: title only (for cases where artist names diverge completely)
+function trackMatchKeyTitleOnly($title) {
+    $title = cleanTitle($title ?? '');
+    $s = mb_strtolower($title, 'UTF-8');
+    $map = ['á'=>'a','à'=>'a','ã'=>'a','â'=>'a','ä'=>'a',
+            'é'=>'e','ê'=>'e','ë'=>'e','è'=>'e',
+            'í'=>'i','î'=>'i','ï'=>'i','ì'=>'i',
+            'ó'=>'o','ô'=>'o','õ'=>'o','ö'=>'o','ò'=>'o',
+            'ú'=>'u','û'=>'u','ü'=>'u','ù'=>'u',
+            'ç'=>'c','ñ'=>'n','ý'=>'y'];
+    $s = strtr($s, $map);
+    return preg_replace('/[^a-z0-9]/i', '', $s);
 }
 
 // ── Debug endpoint (remove after fixing) ──
@@ -814,34 +914,117 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $spotTracks = spotPlaylistTrackUris($tok,$pl['spotify_id']);
         $localSongs = loadSongs($pl);
 
-        // Build normalised key maps
-        // Local: normalised_key => song
-        $localKeyMap = [];
-        foreach($localSongs as $s){
-            $k = trackMatchKey($s['title'], $s['artist']);
-            $localKeyMap[$k] = $s;
-        }
-        // Spotify: normalised_key => [uri, name, artist]
-        $spotKeyMap = [];
-        foreach($spotTracks as $uri=>$info){
-            $k = trackMatchKey($info['name'], $info['artist']);
-            $spotKeyMap[$k] = array_merge($info, ['uri'=>$uri]);
+        // Build local maps: full key AND title-only key → index
+        $localKeyMap      = []; // "title||artistFirst" => idx
+        $localTitleMap    = []; // "titleonly" => idx  (fallback)
+        foreach($localSongs as $idx=>$s){
+            $k  = trackMatchKey($s['title'], $s['artist']);
+            $kt = trackMatchKeyTitleOnly($s['title']);
+            if(!isset($localKeyMap[$k]))   $localKeyMap[$k]   = $idx;
+            if(!isset($localTitleMap[$kt])) $localTitleMap[$kt] = $idx;
         }
 
-        // Only on Spotify (not matched locally)
+        // Build Spotify maps
+        $spotKeyMap   = []; // "title||artistFirst" => info+uri
+        $spotTitleMap = []; // "titleonly" => info+uri  (fallback)
+        foreach($spotTracks as $uri=>$info){
+            $k  = trackMatchKey($info['name'], $info['artist']);
+            $kt = trackMatchKeyTitleOnly($info['name']);
+            if(!isset($spotKeyMap[$k]))   $spotKeyMap[$k]   = array_merge($info,['uri'=>$uri]);
+            if(!isset($spotTitleMap[$kt])) $spotTitleMap[$kt] = array_merge($info,['uri'=>$uri]);
+        }
+
+        // Helper: find local index for a Spotify track (two-level)
+        $findLocal = function($name,$artist) use($localKeyMap,$localTitleMap){
+            $k  = trackMatchKey($name,$artist);
+            if(isset($localKeyMap[$k])) return $localKeyMap[$k];
+            $kt = trackMatchKeyTitleOnly($name);
+            return $localTitleMap[$kt] ?? null;
+        };
+        // Helper: find Spotify info for a local track (two-level)
+        $findSpot = function($title,$artist) use($spotKeyMap,$spotTitleMap){
+            $k  = trackMatchKey($title,$artist);
+            if(isset($spotKeyMap[$k])) return $spotKeyMap[$k];
+            $kt = trackMatchKeyTitleOnly($title);
+            return $spotTitleMap[$kt] ?? null;
+        };
+
+        // Only on Spotify
         $onlySpotify = [];
         foreach($spotTracks as $uri=>$info){
-            $k = trackMatchKey($info['name'], $info['artist']);
-            if(!isset($localKeyMap[$k])) $onlySpotify[] = array_merge($info,['uri'=>$uri]);
+            if($findLocal($info['name'],$info['artist']) === null)
+                $onlySpotify[] = array_merge($info,['uri'=>$uri]);
         }
-        // Only local (not matched on Spotify)
+        // Only local
         $onlyLocal = [];
-        foreach($localSongs as $s){
-            $k = trackMatchKey($s['title'], $s['artist']);
-            if(!isset($spotKeyMap[$k])) $onlyLocal[] = $s;
+        foreach($localSongs as $idx=>$s){
+            if($findSpot($s['title'],$s['artist']) === null)
+                $onlyLocal[] = array_merge($s,['_idx'=>$idx]);
+        }
+        // In both: missing spotify_url, or missing artist, or missing duration_ms
+        $missingMeta = [];
+        // Also: suggest swapping to a more popular version
+        $suggestSwap = [];
+        $appTok = spotToken(); // app token for search (no user scope needed)
+
+        foreach($localSongs as $idx=>$s){
+            $spotInfo = $findSpot($s['title'],$s['artist']);
+            if(!$spotInfo) continue; // only in local, handled above
+            $uri = $spotInfo['uri'];
+            $trackId = preg_replace('/^spotify:track:/i','',$uri);
+            $spotUrl = 'https://open.spotify.com/track/'.$trackId;
+            $needsUrl      = empty($s['spotify_url']);
+            $needsArtist   = empty($s['artist']);
+            $needsDuration = empty($s['duration_ms']);
+            if($needsUrl || $needsArtist || $needsDuration){
+                $missing = [];
+                if($needsUrl)      $missing[] = 'link';
+                if($needsArtist)   $missing[] = 'artista';
+                if($needsDuration) $missing[] = 'duração';
+                $missingMeta[] = [
+                    '_idx'        => $idx,
+                    'title'       => $s['title'],
+                    'artist'      => $s['artist'],
+                    'uri'         => $uri,
+                    'spotify_url' => $spotUrl,
+                    'spot_artist' => $spotInfo['artist'],
+                    'spot_duration_ms' => $spotInfo['duration_ms'] ?? 0,
+                    'missing'     => $missing,
+                ];
+            }
+
+            // Check if a more popular version exists for this title
+            // Only search by title (no artist) to find the globally most popular version
+            $popular = spotSearchTrackFull($appTok, $s['title'], '');
+            if($popular && $popular['uri'] !== $uri){
+                // Get popularity of current version in playlist
+                $curPop = $spotInfo['popularity'] ?? 0;
+                $newPop = $popular['popularity'] ?? 0;
+                // Only suggest if new version is significantly more popular (>= 15 points difference)
+                if($newPop - $curPop >= 15){
+                    $suggestSwap[] = [
+                        '_idx'           => $idx,
+                        'title'          => $s['title'],
+                        'cur_artist'     => $spotInfo['artist'],
+                        'cur_uri'        => $uri,
+                        'cur_popularity' => $curPop,
+                        'new_artist'     => $popular['artist'],
+                        'new_uri'        => $popular['uri'],
+                        'new_spotify_url'=> $popular['spotify_url'],
+                        'new_popularity' => $newPop,
+                        'new_duration_ms'=> $popular['duration_ms'],
+                    ];
+                }
+            }
         }
 
-        jsonOut(['ok'=>true,'only_spotify'=>$onlySpotify,'only_local'=>$onlyLocal,'spotify_total'=>count($spotTracks),'local_total'=>count($localSongs)]);
+        jsonOut(['ok'=>true,
+                 'only_spotify' =>$onlySpotify,
+                 'only_local'   =>$onlyLocal,
+                 'missing_meta' =>$missingMeta,
+                 'suggest_swap' =>$suggestSwap,
+                 'spotify_total'=>count($spotTracks),
+                 'local_total'  =>count($localSongs)]);
     }
 
     // ── Spotify sync apply ──
@@ -851,12 +1034,28 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(empty($pl['spotify_id'])) jsonOut(['ok'=>false,'error'=>'Esta lista não tem playlist Spotify associada.']);
         $tok = spotUserToken();
         if(!$tok) jsonOut(['ok'=>false,'error'=>'auth_required']);
-        $addLocal   = json_decode($_POST['add_local']??'[]',true);   // URIs to add to local
-        $removeLocal= json_decode($_POST['remove_local']??'[]',true); // URIs to remove from local
-        $addSpot    = json_decode($_POST['add_spotify']??'[]',true);  // title|artist pairs to add to Spotify
-        $removeSpot = json_decode($_POST['remove_spotify']??'[]',true); // URIs to remove from Spotify
+        $addLocal       = json_decode($_POST['add_local']??'[]',true);         // Spotify URIs → add to local
+        $removeLocalIdx = json_decode($_POST['remove_local_idx']??'[]',true);  // local indices → remove from local
+        $addSpot        = json_decode($_POST['add_spotify']??'[]',true);       // title|artist → add to Spotify
+        $removeSpot     = json_decode($_POST['remove_spotify']??'[]',true);    // Spotify URIs → remove from Spotify
+        $fillMeta       = json_decode($_POST['fill_spotify_urls']??'[]',true); // [{idx,spotify_url,spotify_uri,spot_artist,spot_duration_ms}]
+        $swapVersions   = json_decode($_POST['swap_versions']??'[]',true);     // [{idx,cur_uri,new_uri,new_spotify_url,new_artist,new_duration_ms}]
         $songs = loadSongs($pl);
-        // Apply to local
+
+        // Fill missing spotify_url / artist / duration_ms on existing local songs
+        if($fillMeta){
+            foreach($fillMeta as $item){
+                $idx = (int)($item['idx']??-1);
+                if($idx<0 || !isset($songs[$idx])) continue;
+                if(!empty($item['spotify_url']))     $songs[$idx]['spotify_url']  = $item['spotify_url'];
+                if(!empty($item['spotify_uri']))     $songs[$idx]['spotify_uri']  = $item['spotify_uri'];
+                if(!empty($item['spot_artist']) && empty($songs[$idx]['artist']))
+                    $songs[$idx]['artist'] = $item['spot_artist'];
+                if(!empty($item['spot_duration_ms']) && empty($songs[$idx]['duration_ms']))
+                    $songs[$idx]['duration_ms'] = (int)$item['spot_duration_ms'];
+            }
+        }
+        // Add from Spotify to local
         if($addLocal){
             $appTok = spotToken();
             foreach($addLocal as $uri){
@@ -864,29 +1063,71 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     $ch=curl_init("https://api.spotify.com/v1/tracks/{$m[1]}");
                     curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $appTok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>10]);
                     $d=json_decode(curl_exec($ch),true); curl_close($ch);
-                    if(!empty($d['name'])) $songs[]=['title'=>cleanTitle($d['name']),'artist'=>$d['artists'][0]['name']??'','cifra_url'=>'N/A','cifra_source'=>'cifraclub','duration_ms'=>(int)($d['duration_ms']??0),'spotify_url'=>$d['external_urls']['spotify']??''];
+                    if(!empty($d['name'])){
+                        $rawName=$d['name'];
+                        $songs[]=['title'=>$rawName,'title_display'=>cleanTitle($rawName),
+                                  'artist'=>$d['artists'][0]['name']??'','cifra_url'=>'N/A','cifra_source'=>'cifraclub',
+                                  'duration_ms'=>(int)($d['duration_ms']??0),
+                                  'spotify_url'=>$d['external_urls']['spotify']??'',
+                                  'spotify_uri'=>$d['uri']??''];
+                    }
                 }
             }
         }
-        if($removeLocal){
-            // Remove by spotify_url or by title|artist key
-            $songs=array_values(array_filter($songs,function($s) use($removeLocal){
-                return !in_array($s['spotify_url']??'',$removeLocal);
-            }));
+        // Remove from local by index (descending to preserve indices)
+        if($removeLocalIdx){
+            $toRemove = array_map('intval',(array)$removeLocalIdx);
+            rsort($toRemove);
+            foreach($toRemove as $i){ if(isset($songs[$i])) array_splice($songs,$i,1); }
+            $songs = array_values($songs);
         }
         saveSongs($pl,$songs);
-        // Apply to Spotify
+        // Add to Spotify — and back-fill metadata on local songs
         if($addSpot){
             $appTok2 = spotToken();
             $urisToAdd = [];
+            // Find local song index by title|artist key for back-filling
+            $localIndexByKey = [];
+            foreach($songs as $idx=>$s) $localIndexByKey[$s['title'].'|'.$s['artist']] = $idx;
             foreach($addSpot as $ta){
                 [$t,$a] = explode('|',$ta,2);
-                $uri = spotSearchTrack($tok,$t,$a);
-                if($uri) $urisToAdd[]=$uri;
+                $full = spotSearchTrackFull($appTok2,$t,$a);
+                if($full){
+                    $urisToAdd[] = $full['uri'];
+                    // Back-fill local song metadata
+                    $localIdx = $localIndexByKey[$ta] ?? null;
+                    if($localIdx !== null){
+                        if(empty($songs[$localIdx]['spotify_url']))  $songs[$localIdx]['spotify_url']  = $full['spotify_url'];
+                        if(empty($songs[$localIdx]['spotify_uri']))  $songs[$localIdx]['spotify_uri']  = $full['uri'];
+                        if(empty($songs[$localIdx]['artist']))       $songs[$localIdx]['artist']       = $full['artist'];
+                        if(empty($songs[$localIdx]['duration_ms']))  $songs[$localIdx]['duration_ms']  = $full['duration_ms'];
+                    }
+                }
             }
             if($urisToAdd) spotAddTracks($tok,$pl['spotify_id'],$urisToAdd);
         }
+        // Remove from Spotify
         if($removeSpot) spotRemoveTracks($tok,$pl['spotify_id'],$removeSpot);
+        // Swap versions on Spotify + update local metadata
+        if($swapVersions){
+            foreach($swapVersions as $sw){
+                $idx = (int)($sw['idx']??-1);
+                $curUri = $sw['cur_uri']??'';
+                $newUri = $sw['new_uri']??'';
+                if(!$curUri || !$newUri) continue;
+                // Remove old, add new on Spotify
+                spotRemoveTracks($tok,$pl['spotify_id'],[$curUri]);
+                spotAddTracks($tok,$pl['spotify_id'],[$newUri]);
+                // Update local song
+                if($idx>=0 && isset($songs[$idx])){
+                    $songs[$idx]['spotify_url']  = $sw['new_spotify_url'] ?? '';
+                    $songs[$idx]['spotify_uri']  = $newUri;
+                    if(!empty($sw['new_artist']))      $songs[$idx]['artist']      = $sw['new_artist'];
+                    if(!empty($sw['new_duration_ms'])) $songs[$idx]['duration_ms'] = (int)$sw['new_duration_ms'];
+                }
+            }
+            saveSongs($pl,$songs);
+        }
         jsonOut(['ok'=>true,'local_count'=>count($songs)]);
     }
     // -- Preview import: search Spotify for each parsed song --
@@ -1035,15 +1276,23 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(empty($r['id'])) jsonOut(['ok'=>false,'error'=>'Falha ao criar playlist no Spotify: '.($r['error']['message']??'erro desconhecido')]);
         $newSpotId = $r['id'];
         $spotUrl   = $r['external_urls']['spotify']??'';
-        // Search & add tracks
+        // Search & add tracks — and collect URI→song mapping to update local spotify_url
         $appTok = spotToken();
         $songs  = loadSongs($pl);
         $uris=[];
-        foreach($songs as $s){
+        $songUriMap = []; // index => uri
+        foreach($songs as $idx=>$s){
             $uri = spotSearchTrack($appTok,$s['title'],$s['artist']);
-            if($uri) $uris[]=$uri;
+            if($uri){ $uris[]=$uri; $songUriMap[$idx]=$uri; }
         }
         if($uris) spotAddTracks($tok,$newSpotId,$uris);
+        // Update local songs with spotify_url and spotify_uri
+        foreach($songUriMap as $idx=>$uri){
+            $trackId = preg_replace('/^spotify:track:/i','',$uri);
+            $songs[$idx]['spotify_url']  = 'https://open.spotify.com/track/'.$trackId;
+            $songs[$idx]['spotify_uri']  = $uri;
+        }
+        saveSongs($pl,$songs);
         // Save spotify_id back to local playlist
         $pls=loadPlaylists();
         foreach($pls as &$p){ if($p['id']===$pl['id']){ $p['spotify_id']=$newSpotId; $p['spotify_url']=$spotUrl; break; } } unset($p);
@@ -1747,7 +1996,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
               <input type="checkbox" class="song-check" data-i="<?= $i ?>" style="accent-color:var(--accent);cursor:pointer;margin:0">
             </td>
             <td class="td-num"><?= str_pad($i+1,2,'0',STR_PAD_LEFT) ?></td>
-            <td class="td-title"><?= htmlspecialchars($song['title']) ?></td>
+            <td class="td-title"><?= htmlspecialchars($song['title_display'] ?? cleanTitle($song['title'])) ?></td>
             <td class="td-artist">
               <?= htmlspecialchars($song['artist']) ?>
 
@@ -2105,25 +2354,63 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     </div>
     <div id="syncDiffWrap" style="display:none">
       <div id="syncStats" style="font-family:'DM Mono',monospace;font-size:.68rem;color:var(--text3);margin-bottom:10px"></div>
+
+      <!-- Only on Spotify → add to local OR remove from Spotify -->
       <div id="syncOnlySpotWrap">
-        <div style="font-size:.76rem;font-weight:600;color:var(--accent);margin-bottom:6px">📥 Apenas no Spotify (não estão na lista local)</div>
-        <div id="syncOnlySpotList" style="max-height:140px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.75rem;color:var(--text2)">
+        <div style="font-size:.76rem;font-weight:600;color:var(--accent);margin-bottom:4px">📥 Só no Spotify</div>
+        <div style="font-size:.68rem;color:var(--text3);margin-bottom:6px">Escolhe o que fazer com cada música:</div>
+        <div id="syncOnlySpotList" style="max-height:160px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--text2)">
             <input type="checkbox" id="syncAddLocalAll" style="accent-color:var(--accent)"> Adicionar todas à lista local
           </label>
-        </div>
-      </div>
-      <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
-      <div id="syncOnlyLocalWrap">
-        <div style="font-size:.76rem;font-weight:600;color:#f0a050;margin-bottom:6px">📤 Apenas na lista local (não estão no Spotify)</div>
-        <div id="syncOnlyLocalList" style="max-height:140px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.75rem;color:var(--text2)">
-            <input type="checkbox" id="syncAddSpotAll" style="accent-color:var(--accent)"> Adicionar todas ao Spotify
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--danger)">
+            <input type="checkbox" id="syncRemoveSpotAll" style="accent-color:var(--danger)"> Remover todas do Spotify
           </label>
         </div>
       </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:10px 0">
+
+      <!-- Only local → add to Spotify OR remove from local -->
+      <div id="syncOnlyLocalWrap">
+        <div style="font-size:.76rem;font-weight:600;color:#f0a050;margin-bottom:4px">📤 Só na lista local</div>
+        <div style="font-size:.68rem;color:var(--text3);margin-bottom:6px">Escolhe o que fazer com cada música:</div>
+        <div id="syncOnlyLocalList" style="max-height:160px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--text2)">
+            <input type="checkbox" id="syncAddSpotAll" style="accent-color:var(--accent)"> Adicionar todas ao Spotify
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--danger)">
+            <input type="checkbox" id="syncRemoveLocalAll" style="accent-color:var(--danger)"> Remover todas da lista local
+          </label>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:10px 0">
+
+      <!-- Suggest swapping to more popular version -->
+      <div id="syncSwapWrap" style="display:none">
+        <div style="font-size:.76rem;font-weight:600;color:#a78bfa;margin-bottom:4px">🔀 Versão mais popular disponível</div>
+        <div style="font-size:.68rem;color:var(--text3);margin-bottom:6px">O Spotify tem uma versão muito mais ouvida destas músicas. Queres substituir?</div>
+        <div id="syncSwapList" style="max-height:160px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:6px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--text2)">
+            <input type="checkbox" id="syncSwapAll" style="accent-color:#a78bfa"> Substituir todas
+          </label>
+        </div>
+      </div>
+      <hr id="syncSwapHr" style="display:none;border:none;border-top:1px solid var(--border);margin:10px 0">
+
+      <!-- Missing metadata (link / artist / duration) -->
+        <div style="font-size:.76rem;font-weight:600;color:var(--text2);margin-bottom:4px">🔗 Metadados em falta</div>
+        <div style="font-size:.68rem;color:var(--text3);margin-bottom:6px">Estas músicas existem em ambos mas faltam dados localmente (link Spotify, artista ou duração).</div>
+        <div id="syncMissingUrlList" style="max-height:120px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
+        <div style="margin-top:6px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--text2)">
+            <input type="checkbox" id="syncFillUrlAll" checked style="accent-color:var(--accent)"> Preencher todos os metadados em falta
+          </label>
+        </div>
+      </div>
+
       <div id="syncNoChanges" style="display:none;text-align:center;padding:16px 0;font-size:.82rem;color:var(--text3)">✓ Lista local e Spotify estão sincronizados!</div>
     </div>
     <div id="syncResult" class="alert alert-ok" style="display:none;margin-top:10px"></div>
@@ -2862,22 +3149,30 @@ $('#syncAnalyseBtn').on('click', function(){
 });
 
 function renderSyncDiff(r){
-  var onlySpot = r.only_spotify||[];
-  var onlyLocal = r.only_local||[];
+  var onlySpot   = r.only_spotify||[];
+  var onlyLocal  = r.only_local||[];
+  var missingMeta = r.missing_meta||[];
+  var suggestSwap = r.suggest_swap||[];
 
-  $('#syncStats').text('Spotify: '+r.spotify_total+' músicas · Local: '+r.local_total+' músicas · Diferenças: '+(onlySpot.length+onlyLocal.length));
+  var diffs = onlySpot.length + onlyLocal.length + missingMeta.length + suggestSwap.length;
+  $('#syncStats').text('Spotify: '+r.spotify_total+' músicas · Local: '+r.local_total+' músicas · Diferenças: '+diffs);
 
-  // Only Spotify section
+  // ── Only on Spotify ──
   var spotList = $('#syncOnlySpotList').empty();
   if(onlySpot.length){
     $('#syncOnlySpotWrap').show();
     onlySpot.forEach(function(t, i){
-      var id = 'cbs_'+i;
-      var row = $('<div class="sync-row">'
-        +'<label for="'+id+'">'
-        +'<input type="checkbox" id="'+id+'" class="sync-add-local" data-uri="'+escH(t.uri)+'" style="accent-color:var(--accent)" checked>'
-        +'<span><span class="sr-title">'+escH(t.name)+'</span> <span class="sr-artist">— '+escH(t.artist)+'</span></span>'
-        +'</label>'
+      var idAdd = 'cbs_add_'+i, idRem = 'cbs_rem_'+i;
+      var row = $('<div class="sync-row" style="justify-content:space-between">'
+        +'<span style="flex:1;min-width:0"><span class="sr-title">'+escH(t.name)+'</span> <span class="sr-artist">— '+escH(t.artist)+'</span></span>'
+        +'<span style="display:flex;gap:10px;flex-shrink:0;margin-left:8px">'
+          +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--accent)" title="Adicionar à lista local">'
+            +'<input type="checkbox" id="'+idAdd+'" class="sync-add-local" data-uri="'+escH(t.uri)+'" style="accent-color:var(--accent)" checked> +local'
+          +'</label>'
+          +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--danger)" title="Remover do Spotify">'
+            +'<input type="checkbox" id="'+idRem+'" class="sync-rem-spot" data-uri="'+escH(t.uri)+'" style="accent-color:var(--danger)"> −Spotify'
+          +'</label>'
+        +'</span>'
         +'</div>');
       spotList.append(row);
     });
@@ -2885,18 +3180,24 @@ function renderSyncDiff(r){
     $('#syncOnlySpotWrap').hide();
   }
 
-  // Only local section
+  // ── Only local ──
   var localList = $('#syncOnlyLocalList').empty();
   if(onlyLocal.length){
     $('#syncOnlyLocalWrap').show();
     onlyLocal.forEach(function(s, i){
-      var id = 'cbl_'+i;
+      var idAdd = 'cbl_add_'+i, idRem = 'cbl_rem_'+i;
       var key = s.title+'|'+s.artist;
-      var row = $('<div class="sync-row">'
-        +'<label for="'+id+'">'
-        +'<input type="checkbox" id="'+id+'" class="sync-add-spot" data-key="'+escH(key)+'" style="accent-color:var(--accent)" checked>'
-        +'<span><span class="sr-title">'+escH(s.title)+'</span> <span class="sr-artist">— '+escH(s.artist)+'</span></span>'
-        +'</label>'
+      var idx = s._idx !== undefined ? s._idx : -1;
+      var row = $('<div class="sync-row" style="justify-content:space-between">'
+        +'<span style="flex:1;min-width:0"><span class="sr-title">'+escH(s.title)+'</span> <span class="sr-artist">— '+escH(s.artist)+'</span></span>'
+        +'<span style="display:flex;gap:10px;flex-shrink:0;margin-left:8px">'
+          +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--accent)" title="Adicionar ao Spotify">'
+            +'<input type="checkbox" id="'+idAdd+'" class="sync-add-spot" data-key="'+escH(key)+'" style="accent-color:var(--accent)" checked> +Spotify'
+          +'</label>'
+          +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--danger)" title="Remover da lista local">'
+            +'<input type="checkbox" id="'+idRem+'" class="sync-rem-local" data-idx="'+idx+'" style="accent-color:var(--danger)"> −local'
+          +'</label>'
+        +'</span>'
         +'</div>');
       localList.append(row);
     });
@@ -2904,9 +3205,69 @@ function renderSyncDiff(r){
     $('#syncOnlyLocalWrap').hide();
   }
 
-  if(!onlySpot.length && !onlyLocal.length){
+  // ── Missing metadata (link / artist / duration) ──
+  var urlList = $('#syncMissingUrlList').empty();
+  if(missingMeta.length){
+    $('#syncMissingUrlWrap').show();
+    missingMeta.forEach(function(s){
+      var badges = (s.missing||[]).map(function(m){
+        return '<span style="background:var(--surface2);border-radius:3px;padding:1px 5px;font-size:.65rem;color:var(--text3)">'+escH(m)+'</span>';
+      }).join(' ');
+      var row = $('<div class="sync-row">'
+        +'<label style="display:flex;align-items:center;gap:5px;cursor:pointer;flex:1;flex-wrap:wrap">'
+          +'<input type="checkbox" class="sync-fill-url"'
+            +' data-idx="'+s._idx+'"'
+            +' data-spotify-url="'+escH(s.spotify_url)+'"'
+            +' data-spotify-uri="'+escH(s.uri)+'"'
+            +' data-spot-artist="'+escH(s.spot_artist||'')+'"'
+            +' data-spot-duration="'+(s.spot_duration_ms||0)+'"'
+            +' style="accent-color:var(--accent)" checked>'
+          +'<span style="flex:1"><span class="sr-title">'+escH(s.title)+'</span>'
+            +(s.artist ? ' <span class="sr-artist">— '+escH(s.artist)+'</span>' : ' <span class="sr-artist" style="color:var(--danger)">(sem artista)</span>')
+            +' '+badges
+          +'</span>'
+        +'</label>'
+        +'</div>');
+      urlList.append(row);
+    });
+  } else {
+    $('#syncMissingUrlWrap').hide();
+  }
+
+  // ── Suggest swap to more popular version ──
+  var swapList = $('#syncSwapList').empty();
+  if(suggestSwap.length){
+    $('#syncSwapWrap,#syncSwapHr').show();
+    suggestSwap.forEach(function(s){
+      var row = $('<div class="sync-row" style="flex-direction:column;align-items:flex-start;gap:4px">'
+        +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;width:100%">'
+          +'<input type="checkbox" class="sync-swap" style="accent-color:#a78bfa;flex-shrink:0"'
+            +' data-idx="'+s._idx+'"'
+            +' data-cur-uri="'+escH(s.cur_uri)+'"'
+            +' data-new-uri="'+escH(s.new_uri)+'"'
+            +' data-new-url="'+escH(s.new_spotify_url)+'"'
+            +' data-new-artist="'+escH(s.new_artist)+'"'
+            +' data-new-duration="'+(s.new_duration_ms||0)+'">'
+          +'<span style="flex:1">'
+            +'<span class="sr-title">'+escH(s.title)+'</span>'
+            +'<div style="font-size:.68rem;margin-top:2px;display:flex;gap:8px;flex-wrap:wrap">'
+              +'<span style="color:var(--danger)">❌ '+escH(s.cur_artist)+' <span style="opacity:.6">(pop. '+s.cur_popularity+')</span></span>'
+              +'<span style="color:#a78bfa">→ ✅ '+escH(s.new_artist)+' <span style="opacity:.6">(pop. '+s.new_popularity+')</span></span>'
+            +'</div>'
+          +'</span>'
+        +'</label>'
+        +'</div>');
+      swapList.append(row);
+    });
+  } else {
+    $('#syncSwapWrap,#syncSwapHr').hide();
+  }
+
+  var anyDiff = onlySpot.length || onlyLocal.length || missingMeta.length || suggestSwap.length;
+  if(!anyDiff){
     $('#syncNoChanges').show();
-    $('#syncOnlySpotWrap,#syncOnlyLocalWrap').hide();
+    $('#syncOnlySpotWrap,#syncOnlyLocalWrap,#syncMissingUrlWrap').hide();
+    $('#syncApplyBtn').hide();
   } else {
     $('#syncNoChanges').hide();
     $('#syncApplyBtn').show();
@@ -2914,57 +3275,98 @@ function renderSyncDiff(r){
   $('#syncDiffWrap').show();
 }
 
-// Select-all checkboxes
-$('#syncAddLocalAll').on('change', function(){
-  $('.sync-add-local').prop('checked', $(this).is(':checked'));
+// Select-all helpers
+$('#syncAddLocalAll').on('change', function(){ $('.sync-add-local').prop('checked', this.checked); });
+$('#syncRemoveSpotAll').on('change', function(){ $('.sync-rem-spot').prop('checked', this.checked); });
+$('#syncAddSpotAll').on('change', function(){ $('.sync-add-spot').prop('checked', this.checked); });
+$('#syncRemoveLocalAll').on('change', function(){ $('.sync-rem-local').prop('checked', this.checked); });
+$('#syncSwapAll').on('change', function(){ $('.sync-swap').prop('checked', this.checked); });
+
+// Mutual exclusion: adding and removing the same track makes no sense
+$(document).on('change','.sync-add-local',function(){
+  if(this.checked){ $(this).closest('.sync-row').find('.sync-rem-spot').prop('checked',false); }
 });
-$('#syncAddSpotAll').on('change', function(){
-  $('.sync-add-spot').prop('checked', $(this).is(':checked'));
+$(document).on('change','.sync-rem-spot',function(){
+  if(this.checked){ $(this).closest('.sync-row').find('.sync-add-local').prop('checked',false); }
+});
+$(document).on('change','.sync-add-spot',function(){
+  if(this.checked){ $(this).closest('.sync-row').find('.sync-rem-local').prop('checked',false); }
+});
+$(document).on('change','.sync-rem-local',function(){
+  if(this.checked){ $(this).closest('.sync-row').find('.sync-add-spot').prop('checked',false); }
 });
 
 $('#syncApplyBtn').on('click', function(){
-  // Collect selections
-  var addLocal = [];
+  var addLocal      = [];
+  var removeSpot    = [];
+  var addSpotify    = [];
+  var removeLocal   = [];
+  var fillUrls      = [];
+  var swapVersions  = [];
+
   $('.sync-add-local:checked').each(function(){ addLocal.push($(this).data('uri')); });
-
-  var addSpotify = [];
+  $('.sync-rem-spot:checked').each(function(){ removeSpot.push($(this).data('uri')); });
   $('.sync-add-spot:checked').each(function(){ addSpotify.push($(this).data('key')); });
+  $('.sync-rem-local:checked').each(function(){ removeLocal.push(parseInt($(this).data('idx'))); });
+  $('.sync-fill-url:checked').each(function(){
+    fillUrls.push({
+      idx          : parseInt($(this).data('idx')),
+      spotify_url  : $(this).data('spotify-url'),
+      spotify_uri  : $(this).data('spotify-uri'),
+      spot_artist  : $(this).data('spot-artist') || '',
+      spot_duration_ms: parseInt($(this).data('spot-duration')) || 0
+    });
+  });
+  $('.sync-swap:checked').each(function(){
+    swapVersions.push({
+      idx          : parseInt($(this).data('idx')),
+      cur_uri      : $(this).data('cur-uri'),
+      new_uri      : $(this).data('new-uri'),
+      new_spotify_url: $(this).data('new-url'),
+      new_artist   : $(this).data('new-artist'),
+      new_duration_ms: parseInt($(this).data('new-duration')) || 0
+    });
+  });
 
-  if(!addLocal.length && !addSpotify.length){
+  if(!addLocal.length && !removeSpot.length && !addSpotify.length && !removeLocal.length && !fillUrls.length && !swapVersions.length){
     toast('Nenhuma opção seleccionada.');
     return;
   }
 
-  // Confirmation
   var msgs = [];
-  if(addLocal.length) msgs.push('Adicionar '+addLocal.length+' música(s) à lista local');
-  if(addSpotify.length) msgs.push('Adicionar '+addSpotify.length+' música(s) ao Spotify');
+  if(addLocal.length)     msgs.push('+ '+addLocal.length+' música(s) à lista local');
+  if(removeLocal.length)  msgs.push('− '+removeLocal.length+' música(s) da lista local');
+  if(addSpotify.length)   msgs.push('+ '+addSpotify.length+' música(s) ao Spotify');
+  if(removeSpot.length)   msgs.push('− '+removeSpot.length+' música(s) do Spotify');
+  if(fillUrls.length)     msgs.push('🔗 Preencher '+fillUrls.length+' metadado(s) em falta');
+  if(swapVersions.length) msgs.push('🔀 Substituir '+swapVersions.length+' versão(ões) pela mais popular');
   if(!confirm('Confirmas as seguintes alterações?\n\n• '+msgs.join('\n• '))) return;
 
   var btn = $(this);
   btn.prop('disabled',true).text('A sincronizar…');
 
   $.post('?pl='+PL_ID, {
-    _action:'spot_sync_apply',
-    pl:PL_ID,
-    add_local:JSON.stringify(addLocal),
-    remove_local:JSON.stringify([]),
-    add_spotify:JSON.stringify(addSpotify),
-    remove_spotify:JSON.stringify([])
+    _action          :'spot_sync_apply',
+    pl               :PL_ID,
+    add_local        :JSON.stringify(addLocal),
+    remove_local_idx :JSON.stringify(removeLocal),
+    add_spotify      :JSON.stringify(addSpotify),
+    remove_spotify   :JSON.stringify(removeSpot),
+    fill_spotify_urls:JSON.stringify(fillUrls),
+    swap_versions    :JSON.stringify(swapVersions)
   }, function(r){
     btn.prop('disabled',false).text('Aplicar Selecção');
     if(r.ok){
-      $('#syncResult').text('✓ Sincronização aplicada com sucesso! Lista local: '+r.local_count+' músicas.').show();
+      $('#syncResult').removeClass('alert-err').addClass('alert-ok')
+        .text('✓ Sincronização aplicada! Lista local: '+r.local_count+' músicas.').show();
       $('#syncApplyBtn').hide();
       setTimeout(function(){ window.location.reload(); }, 1800);
     } else {
       $('#syncResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro ao sincronizar.').show();
-      setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 5000);
     }
   }, 'json').fail(function(){
     btn.prop('disabled',false).text('Aplicar Selecção');
     $('#syncResult').removeClass('alert-ok').addClass('alert-err').text('Erro de rede.').show();
-    setTimeout(function(){ $('#syncResult').removeClass('alert-err').addClass('alert-ok'); }, 4000);
   });
 });
 
