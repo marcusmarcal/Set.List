@@ -1520,12 +1520,15 @@ tr.just-edited td{animation:rowFlash 1.2s ease forwards}
 /* ── MODAL ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;pointer-events:none;transition:opacity var(--tr)}
 .modal-overlay.open{opacity:1;pointer-events:all}
-.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);padding:26px;width:100%;max-width:460px;transform:translateY(10px);transition:transform var(--tr);display:flex;flex-direction:column;max-height:calc(100vh - 48px);overflow:hidden}
-.modal-body{overflow-y:auto;flex:1;min-height:0;padding-right:4px;margin-right:-4px}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);width:100%;max-width:460px;transform:translateY(10px);transition:transform var(--tr);display:flex;flex-direction:column;max-height:calc(100vh - 48px);overflow:hidden}
+.modal-title{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:700;margin-bottom:2px;padding:26px 26px 0;flex-shrink:0}
+.modal-sub{font-size:.76rem;color:var(--text3);margin-bottom:0;padding:6px 26px 16px;flex-shrink:0}
+.modal-body{overflow-y:auto;flex:1;min-height:0;padding:0 26px}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;padding:16px 26px 22px;flex-shrink:0;border-top:1px solid var(--border)}
 .modal-overlay.open .modal{transform:translateY(0)}
-.modal-title{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:700;margin-bottom:2px}
-.modal-sub{font-size:.76rem;color:var(--text3);margin-bottom:18px}
-.modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+/* Modals without modal-body: direct children get side padding */
+.modal > .fg,.modal > .alert,.modal > .print-opt,.modal > [class*="alert"],.modal > div:not(.modal-title):not(.modal-sub):not(.modal-footer):not(.modal-body):not(.modal-content){padding-left:26px;padding-right:26px}
+.modal-content{padding:0 26px}
 
 /* ── FORMS ── */
 .fg{margin-bottom:15px}
@@ -2197,6 +2200,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   <div class="modal" style="max-width:560px">
     <div class="modal-title">Importar Lista de Texto</div>
     <div class="modal-sub">Cola a tua lista (um por linha, número opcional). Formato: <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título — Artista</code> ou só <code style="font-family:'DM Mono',monospace;font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:4px">Título</code>.</div>
+    <div class="modal-body">
 
     <!-- Destination -->
     <div class="fg">
@@ -2261,7 +2265,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       </div>
       <pre id="importDebugLog" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:8px;font-family:'DM Mono',monospace;font-size:.65rem;line-height:1.5;color:var(--text2);white-space:pre-wrap;word-break:break-all;max-height:180px;overflow-y:auto;margin:0"></pre>
     </div>
-
+    </div><!-- /modal-body -->
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('importTextModal')">Fechar</button>
       <button class="btn btn-outline" id="importToggleDebugBtn" style="font-size:.72rem;padding:4px 10px" title="Mostrar/esconder debug">🐛</button>
@@ -2278,6 +2282,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   <div class="modal" style="max-width:500px">
     <div class="modal-title">Merge de Listas</div>
     <div class="modal-sub">Selecciona duas ou mais listas para fundir numa nova setlist.</div>
+    <div class="modal-body">
     <div class="fg">
       <label class="fl">Listas de origem <span style="color:var(--danger)">*</span></label>
       <div id="mergePlList" style="display:flex;flex-direction:column;gap:5px;max-height:180px;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--r);padding:8px">
@@ -2296,6 +2301,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     </div>
     <div id="mergeError" class="alert alert-err" style="display:none"></div>
     <div id="mergeResult" class="alert alert-ok" style="display:none"></div>
+    </div><!-- /modal-body -->
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('mergeModal')">Cancelar</button>
       <button class="btn btn-primary" id="mergeDoBtn">
@@ -3495,26 +3501,48 @@ $('#importConfirmDoBtn').on('click', function(){
     if(_importPreviewData && _importPreviewData[i]) selected.push(_importPreviewData[i]);
   });
   if(!selected.length){ alert('Seleciona pelo menos uma música.'); return; }
+
+  // Guard: _importDest must be set (set during preview step)
+  if(!_importDest){ alert('Erro interno: destino não definido. Fecha e tenta novamente.'); return; }
+  if(_importDest==='new' && !_importName){ alert('Nome da lista em falta. Volta atrás e define um nome.'); return; }
+
   btn.prop('disabled',true).text('A importar…');
 
-  var payload = {_action:'import_text', pl:PL_ID, text:'placeholder',
-    confirmed: JSON.stringify(selected)};
-  if(_importDest==='new'){ payload.name=_importName; }
-  else { payload.target_id=PL_ID; }
+  var payload = {
+    _action   : 'import_text',
+    pl        : PL_ID,
+    text      : 'confirmed-import',
+    confirmed : JSON.stringify(selected)
+  };
+  if(_importDest==='new'){
+    payload.name = _importName;
+  } else {
+    payload.target_id = PL_ID;
+  }
 
   $.post('?pl='+PL_ID, payload, function(r){
     btn.prop('disabled',false).text('Confirmar Importação');
     if(r.ok){
       closeModal('importConfirmModal');
+      if(_importDest==='new' && r.id){
+        _importedPlId = r.id;
+        // Show Spotify option in importTextModal before navigating
+        $('#importSpotWrap').show();
+        $('#importCreateSpotBtn').data('pl-id', r.id).data('pl-name', r.name);
+        openModal('importTextModal');
+      }
       var msg = _importDest==='new'
         ? '✓ Lista "'+r.name+'" criada com '+r.added+' música'+(r.added===1?'':'s')+'!'
         : '✓ '+r.added+' música'+(r.added===1?' adicionada':' adicionadas')+' à lista.';
       toast(msg);
-      setTimeout(function(){ window.location.reload(); }, 1100);
+      if(_importDest!=='new') setTimeout(function(){ window.location.reload(); }, 1100);
     } else {
       alert(r.error||'Erro ao importar.');
     }
-  }, 'json').fail(function(){ btn.prop('disabled',false).text('Confirmar Importação'); alert('Erro de rede.'); });
+  }, 'json').fail(function(xhr){
+    btn.prop('disabled',false).text('Confirmar Importação');
+    alert('Erro de rede ('+xhr.status+'). Verifica a ligação e tenta novamente.');
+  });
 });
 
 // Select/deselect all in confirm modal
@@ -3715,11 +3743,13 @@ function duplicatePl(id, name) {
   <div class="modal" style="max-width:540px">
     <div class="modal-title">Confirmar Importação</div>
     <div class="modal-sub" id="importConfirmSub">Verifica as músicas encontradas antes de importar.</div>
-    <div style="display:flex;gap:8px;margin-bottom:8px">
-      <button id="importConfirmSelAll" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Selecionar todas</button>
-      <button id="importConfirmSelNone" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Desmarcar todas</button>
+    <div class="modal-body">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="importConfirmSelAll" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Selecionar todas</button>
+        <button id="importConfirmSelNone" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Desmarcar todas</button>
+      </div>
+      <div id="importConfirmList" style="border:1px solid var(--border2);border-radius:var(--r);padding:4px 4px"></div>
     </div>
-    <div id="importConfirmList" style="max-height:52vh;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--r);padding:4px 4px"></div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('importConfirmModal');openModal('importTextModal')">← Voltar</button>
       <button class="btn btn-primary" id="importConfirmDoBtn">Confirmar Importação</button>
