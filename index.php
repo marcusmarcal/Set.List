@@ -337,7 +337,7 @@ function spotUserId($tok) {
 
 // Get track IDs currently in a Spotify playlist
 function spotPlaylistTrackUris($tok,$plId) {
-    $uris=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100&fields=next,items(track(uri,name,duration_ms,artists))";
+    $uris=[]; $url="https://api.spotify.com/v1/playlists/$plId/tracks?limit=100&fields=next,items(track(uri,name,duration_ms,popularity,artists))";
     while($url) {
         $ch=curl_init($url);
         curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>20]);
@@ -349,6 +349,7 @@ function spotPlaylistTrackUris($tok,$plId) {
                 'name'        => $t['name']??'',
                 'artist'      => $t['artists'][0]['name']??'',
                 'duration_ms' => (int)($t['duration_ms']??0),
+                'popularity'  => (int)($t['popularity']??0),
             ];
         }
         $url=$d['next']??null;
@@ -993,27 +994,34 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                 ];
             }
 
-            // Check if a more popular version exists for this title
-            // Only search by title (no artist) to find the globally most popular version
-            $popular = spotSearchTrackFull($appTok, $s['title'], '');
-            if($popular && $popular['uri'] !== $uri){
-                // Get popularity of current version in playlist
-                $curPop = $spotInfo['popularity'] ?? 0;
-                $newPop = $popular['popularity'] ?? 0;
-                // Only suggest if new version is significantly more popular (>= 15 points difference)
-                if($newPop - $curPop >= 15){
-                    $suggestSwap[] = [
-                        '_idx'           => $idx,
-                        'title'          => $s['title'],
-                        'cur_artist'     => $spotInfo['artist'],
-                        'cur_uri'        => $uri,
-                        'cur_popularity' => $curPop,
-                        'new_artist'     => $popular['artist'],
-                        'new_uri'        => $popular['uri'],
-                        'new_spotify_url'=> $popular['spotify_url'],
-                        'new_popularity' => $newPop,
-                        'new_duration_ms'=> $popular['duration_ms'],
-                    ];
+            // Suggest swap only when the version in the Spotify playlist has very low popularity
+            // (meaning it's likely an obscure cover/remix picked up by accident)
+            $curPop = $spotInfo['popularity'] ?? 0;
+            if($curPop <= 25){
+                // Search by title + local artist hint (if we have one) to find the popular version
+                $localArtistHint = $s['artist'] ?? '';
+                $popular = spotSearchTrackFull($appTok, cleanTitle($s['title']), $localArtistHint);
+                // If not found with artist, try title only
+                if(!$popular || $popular['uri'] === $uri){
+                    $popular = spotSearchTrackFull($appTok, cleanTitle($s['title']), '');
+                }
+                if($popular && $popular['uri'] !== $uri){
+                    $newPop = $popular['popularity'] ?? 0;
+                    // Only suggest if new version is significantly more popular
+                    if($newPop - $curPop >= 20){
+                        $suggestSwap[] = [
+                            '_idx'           => $idx,
+                            'title'          => $s['title'],
+                            'cur_artist'     => $spotInfo['artist'],
+                            'cur_uri'        => $uri,
+                            'cur_popularity' => $curPop,
+                            'new_artist'     => $popular['artist'],
+                            'new_uri'        => $popular['uri'],
+                            'new_spotify_url'=> $popular['spotify_url'],
+                            'new_popularity' => $newPop,
+                            'new_duration_ms'=> $popular['duration_ms'],
+                        ];
+                    }
                 }
             }
         }
@@ -1512,7 +1520,8 @@ tr.just-edited td{animation:rowFlash 1.2s ease forwards}
 /* ── MODAL ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;pointer-events:none;transition:opacity var(--tr)}
 .modal-overlay.open{opacity:1;pointer-events:all}
-.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);padding:26px;width:100%;max-width:460px;transform:translateY(10px);transition:transform var(--tr)}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);padding:26px;width:100%;max-width:460px;transform:translateY(10px);transition:transform var(--tr);display:flex;flex-direction:column;max-height:calc(100vh - 48px);overflow:hidden}
+.modal-body{overflow-y:auto;flex:1;min-height:0;padding-right:4px;margin-right:-4px}
 .modal-overlay.open .modal{transform:translateY(0)}
 .modal-title{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:700;margin-bottom:2px}
 .modal-sub{font-size:.76rem;color:var(--text3);margin-bottom:18px}
@@ -2304,9 +2313,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 <div class="modal-overlay" id="syncModal">
   <div class="modal" style="max-width:560px">
     <div class="modal-title">Spotify</div>
+    <div class="modal-body">
     <?php if(!$hasSpot): ?>
     <div class="alert alert-err">Credenciais Spotify não configuradas.</div>
-    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('syncModal')">Fechar</button></div>
     <?php elseif(!$hasSpotUser): ?>
     <div style="text-align:center;padding:16px 0">
       <div style="font-size:.82rem;color:var(--text2);margin-bottom:14px">Para usar esta função é necessário ligar a tua conta Spotify.</div>
@@ -2317,7 +2326,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       </a>
       <?php endif; ?>
     </div>
-    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('syncModal')">Fechar</button></div>
     <?php else: ?>
     <div style="font-size:.72rem;color:var(--text3);display:flex;align-items:center;gap:6px;margin-bottom:14px">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px;color:var(--accent)"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
@@ -2335,7 +2343,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       </button>
     </div>
     <div id="syncResult" class="alert alert-ok" style="display:none;margin-top:6px"></div>
-    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('syncModal')">Fechar</button></div>
 
     <?php else: ?>
     <!-- Has Spotify playlist: sync + reorder -->
@@ -2401,6 +2408,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <hr id="syncSwapHr" style="display:none;border:none;border-top:1px solid var(--border);margin:10px 0">
 
       <!-- Missing metadata (link / artist / duration) -->
+      <div id="syncMissingUrlWrap" style="display:none">
         <div style="font-size:.76rem;font-weight:600;color:var(--text2);margin-bottom:4px">🔗 Metadados em falta</div>
         <div style="font-size:.68rem;color:var(--text3);margin-bottom:6px">Estas músicas existem em ambos mas faltam dados localmente (link Spotify, artista ou duração).</div>
         <div id="syncMissingUrlList" style="max-height:120px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:3px"></div>
@@ -2414,12 +2422,13 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <div id="syncNoChanges" style="display:none;text-align:center;padding:16px 0;font-size:.82rem;color:var(--text3)">✓ Lista local e Spotify estão sincronizados!</div>
     </div>
     <div id="syncResult" class="alert alert-ok" style="display:none;margin-top:10px"></div>
+    <?php endif; ?>
+    <?php endif; ?>
+    </div><!-- /modal-body -->
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('syncModal')">Fechar</button>
       <button class="btn btn-primary" id="syncApplyBtn" style="display:none">Aplicar Selecção</button>
     </div>
-    <?php endif; ?>
-    <?php endif; ?>
   </div>
 </div>
 
