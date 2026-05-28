@@ -1082,13 +1082,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                 }
             }
         }
-        // Remove from local by index (descending to preserve indices)
-        if($removeLocalIdx){
-            $toRemove = array_map('intval',(array)$removeLocalIdx);
-            rsort($toRemove);
-            foreach($toRemove as $i){ if(isset($songs[$i])) array_splice($songs,$i,1); }
-            $songs = array_values($songs);
-        }
+        // Remove from local: DISABLED — sync never deletes local songs
+        // $removeLocalIdx is intentionally ignored to protect user data
         saveSongs($pl,$songs);
         // Add to Spotify — and back-fill metadata on local songs
         if($addSpot){
@@ -2442,9 +2437,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
           <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--text2)">
             <input type="checkbox" id="syncAddSpotAll" style="accent-color:var(--accent)"> Adicionar todas ao Spotify
           </label>
-          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:.72rem;color:var(--danger)">
-            <input type="checkbox" id="syncRemoveLocalAll" style="accent-color:var(--danger)"> Remover todas da lista local
-          </label>
+
         </div>
       </div>
       <hr style="border:none;border-top:1px solid var(--border);margin:10px 0">
@@ -3258,9 +3251,6 @@ function renderSyncDiff(r){
           +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--accent)" title="Adicionar ao Spotify">'
             +'<input type="checkbox" id="'+idAdd+'" class="sync-add-spot" data-key="'+escH(key)+'" style="accent-color:var(--accent)" checked> +Spotify'
           +'</label>'
-          +'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.7rem;color:var(--danger)" title="Remover da lista local">'
-            +'<input type="checkbox" id="'+idRem+'" class="sync-rem-local" data-idx="'+idx+'" style="accent-color:var(--danger)"> −local'
-          +'</label>'
         +'</span>'
         +'</div>');
       localList.append(row);
@@ -3343,7 +3333,6 @@ function renderSyncDiff(r){
 $('#syncAddLocalAll').on('change', function(){ $('.sync-add-local').prop('checked', this.checked); });
 $('#syncRemoveSpotAll').on('change', function(){ $('.sync-rem-spot').prop('checked', this.checked); });
 $('#syncAddSpotAll').on('change', function(){ $('.sync-add-spot').prop('checked', this.checked); });
-$('#syncRemoveLocalAll').on('change', function(){ $('.sync-rem-local').prop('checked', this.checked); });
 $('#syncSwapAll').on('change', function(){ $('.sync-swap').prop('checked', this.checked); });
 
 // Mutual exclusion: adding and removing the same track makes no sense
@@ -3353,25 +3342,18 @@ $(document).on('change','.sync-add-local',function(){
 $(document).on('change','.sync-rem-spot',function(){
   if(this.checked){ $(this).closest('.sync-row').find('.sync-add-local').prop('checked',false); }
 });
-$(document).on('change','.sync-add-spot',function(){
-  if(this.checked){ $(this).closest('.sync-row').find('.sync-rem-local').prop('checked',false); }
-});
-$(document).on('change','.sync-rem-local',function(){
-  if(this.checked){ $(this).closest('.sync-row').find('.sync-add-spot').prop('checked',false); }
-});
+
 
 $('#syncApplyBtn').on('click', function(){
   var addLocal      = [];
   var removeSpot    = [];
   var addSpotify    = [];
-  var removeLocal   = [];
   var fillUrls      = [];
   var swapVersions  = [];
 
   $('.sync-add-local:checked').each(function(){ addLocal.push($(this).data('uri')); });
   $('.sync-rem-spot:checked').each(function(){ removeSpot.push($(this).data('uri')); });
   $('.sync-add-spot:checked').each(function(){ addSpotify.push($(this).data('key')); });
-  $('.sync-rem-local:checked').each(function(){ removeLocal.push(parseInt($(this).data('idx'))); });
   $('.sync-fill-url:checked').each(function(){
     fillUrls.push({
       idx          : parseInt($(this).data('idx')),
@@ -3392,14 +3374,13 @@ $('#syncApplyBtn').on('click', function(){
     });
   });
 
-  if(!addLocal.length && !removeSpot.length && !addSpotify.length && !removeLocal.length && !fillUrls.length && !swapVersions.length){
+  if(!addLocal.length && !removeSpot.length && !addSpotify.length && !fillUrls.length && !swapVersions.length){
     toast('Nenhuma opção seleccionada.');
     return;
   }
 
   var msgs = [];
   if(addLocal.length)     msgs.push('+ '+addLocal.length+' música(s) à lista local');
-  if(removeLocal.length)  msgs.push('− '+removeLocal.length+' música(s) da lista local');
   if(addSpotify.length)   msgs.push('+ '+addSpotify.length+' música(s) ao Spotify');
   if(removeSpot.length)   msgs.push('− '+removeSpot.length+' música(s) do Spotify');
   if(fillUrls.length)     msgs.push('🔗 Preencher '+fillUrls.length+' metadado(s) em falta');
@@ -3413,7 +3394,7 @@ $('#syncApplyBtn').on('click', function(){
     _action          :'spot_sync_apply',
     pl               :PL_ID,
     add_local        :JSON.stringify(addLocal),
-    remove_local_idx :JSON.stringify(removeLocal),
+    remove_local_idx :'[]',
     add_spotify      :JSON.stringify(addSpotify),
     remove_spotify   :JSON.stringify(removeSpot),
     fill_spotify_urls:JSON.stringify(fillUrls),
