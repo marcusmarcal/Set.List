@@ -1266,6 +1266,20 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         }
     }
 
+    // ── Get songs for compare ──
+    if($act==='get_songs_for_compare'){
+        $pls = loadPlaylists();
+        $tid = trim($_POST['pl_id']??'');
+        $targetPl = null;
+        foreach($pls as $p) if($p['id']===$tid){ $targetPl=$p; break; }
+        if(!$targetPl) jsonOut(['ok'=>false,'error'=>'Lista não encontrada.']);
+        $songs = loadSongs($targetPl);
+        $out = array_map(function($s){
+            return ['title'=>$s['title']??'','artist'=>$s['artist']??''];
+        }, $songs);
+        jsonOut(['ok'=>true,'songs'=>$out]);
+    }
+
     // ── Merge playlists ──
 
     if($act==='create_spot_playlist'){
@@ -1620,7 +1634,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .topbar #mergePlBtn,
   .topbar #syncBtn,
   .topbar #printBtn,
-  .topbar #copyListBtn{display:none}
+  .topbar #copyListBtn,
+  .topbar #compareBtn{display:none}
   .topbar .btn-primary .btn-lbl{display:none}
   .tb-more-btn{display:inline-flex}
   /* Modal full-screen on mobile */
@@ -1872,6 +1887,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
         <span class="btn-lbl">Merge</span>
       </button>
+      <button class="btn btn-outline" id="compareBtn" title="Comparar listas">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="10" y2="6"/><line x1="3" y1="12" x2="10" y2="12"/><line x1="3" y1="18" x2="10" y2="18"/><line x1="14" y1="6" x2="21" y2="6"/><line x1="14" y1="12" x2="21" y2="12"/><line x1="14" y1="18" x2="21" y2="18"/></svg>
+        <span class="btn-lbl">Comparar</span>
+      </button>
       <?php if($hasSpot): ?>
       <button class="btn btn-outline" id="syncBtn" title="Sincronizar com Spotify">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
@@ -1901,6 +1920,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <button class="btn btn-outline" id="mergePlBtnM">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
           Merge de Listas
+        </button>
+        <button class="btn btn-outline" id="compareBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="10" y2="6"/><line x1="3" y1="12" x2="10" y2="12"/><line x1="3" y1="18" x2="10" y2="18"/><line x1="14" y1="6" x2="21" y2="6"/><line x1="14" y1="12" x2="21" y2="12"/><line x1="14" y1="18" x2="21" y2="18"/></svg>
+          Comparar Listas
         </button>
         <?php if($hasSpot): ?>
         <button class="btn btn-outline" id="syncBtnM">
@@ -2053,6 +2076,56 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 <?php // ── MODALS ────────────────────────────────────────────────
 ?>
+
+<!-- Compare playlists modal -->
+<div class="modal-overlay" id="compareModal">
+  <div class="modal" style="max-width:620px">
+    <div class="modal-title">Comparar Listas</div>
+    <div class="modal-sub">Mostra o que existe numa lista e não na outra.</div>
+    <div class="modal-body">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:.68rem;color:var(--text3);margin-bottom:4px">Lista A (atual)</div>
+          <div style="font-size:.82rem;font-weight:600;color:var(--text1)" id="cmpNameA"></div>
+        </div>
+        <div style="font-size:1.1rem;color:var(--text3)">↔</div>
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:.68rem;color:var(--text3);margin-bottom:4px">Lista B</div>
+          <select class="fi" id="cmpSelB" style="padding:5px 8px;font-size:.8rem"></select>
+        </div>
+        <button class="btn btn-primary" id="cmpRunBtn" style="flex-shrink:0">Comparar</button>
+      </div>
+
+      <div id="cmpResults" style="display:none">
+        <!-- Only in A -->
+        <div id="cmpOnlyAWrap">
+          <div style="font-size:.74rem;font-weight:600;color:var(--accent);margin-bottom:6px" id="cmpOnlyATitle"></div>
+          <div id="cmpOnlyAList" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;font-size:.8rem;margin-bottom:14px"></div>
+        </div>
+        <!-- Only in B -->
+        <div id="cmpOnlyBWrap">
+          <div style="font-size:.74rem;font-weight:600;color:#f0a050;margin-bottom:6px" id="cmpOnlyBTitle"></div>
+          <div id="cmpOnlyBList" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;font-size:.8rem;margin-bottom:14px"></div>
+        </div>
+        <!-- In both -->
+        <div id="cmpBothWrap" style="display:none">
+          <div style="font-size:.74rem;font-weight:600;color:var(--text3);margin-bottom:6px" id="cmpBothTitle"></div>
+          <div id="cmpBothList" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;font-size:.8rem"></div>
+        </div>
+        <div id="cmpNoChanges" style="display:none;text-align:center;padding:20px 0;font-size:.84rem;color:var(--text3)">✓ As duas listas têm exactamente as mesmas músicas!</div>
+      </div>
+      <div id="cmpLoading" style="display:none;text-align:center;padding:20px 0;font-size:.8rem;color:var(--text3)">A comparar…</div>
+      <div id="cmpError" class="alert alert-err" style="display:none"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('compareModal')">Fechar</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--text2);cursor:pointer">
+        <input type="checkbox" id="cmpShowBoth" style="accent-color:var(--accent)"> Mostrar músicas em comum
+      </label>
+    </div>
+  </div>
+</div>
+
 
 <!-- Song modal (add / edit) -->
 <div class="modal-overlay" id="songModal">
@@ -3593,7 +3666,110 @@ function duplicatePl(id, name) {
 }
 
 
+
+
+// ═══════════════════════════════════════════════════════════════
+// COMPARE PLAYLISTS
+// ═══════════════════════════════════════════════════════════════
+function openCompareModal() {
+  var other = ALL_PLS.filter(function(p){ return p.id !== PL_ID; });
+  if(!other.length){ alert('Precisas de pelo menos duas listas para comparar.'); return; }
+  var html = '';
+  other.forEach(function(p){ html += '<option value="'+escH(p.id)+'">'+escH(p.name)+'</option>'; });
+  $('#cmpSelB').html(html);
+  $('#cmpNameA').text(<?= json_encode($activePl['name']??'') ?>);
+  $('#cmpResults,#cmpLoading,#cmpError').hide();
+  openModal('compareModal');
+}
+
+$('#compareBtn').on('click', openCompareModal);
+$('#compareBtnM').on('click', function(){ closeOverflow(); openCompareModal(); });
+
+$('#cmpShowBoth').on('change', function(){
+  if(this.checked) $('#cmpBothWrap').show();
+  else $('#cmpBothWrap').hide();
+});
+
+function cmpNorm(s) {
+  return (s||'').toLowerCase()
+    .replace(/[áàãâä]/g,'a').replace(/[éêëè]/g,'e').replace(/[íîïì]/g,'i')
+    .replace(/[óôõöò]/g,'o').replace(/[úûüù]/g,'u').replace(/ç/g,'c').replace(/ñ/g,'n')
+    .replace(/[^a-z0-9]/g,'');
+}
+function cmpKey(title, artist) {
+  return cmpNorm(title) + '||' + cmpNorm((artist||'').split(/[\s,;&\/]+/)[0]);
+}
+
+$('#cmpRunBtn').on('click', function(){
+  var bId = $('#cmpSelB').val();
+  if(!bId){ $('#cmpError').text('Escolhe a lista B.').show(); return; }
+  $('#cmpError').hide();
+  $('#cmpResults').hide();
+  $('#cmpLoading').show();
+
+  $.post('?pl='+PL_ID, { _action:'get_songs_for_compare', pl_id: bId }, function(r){
+    $('#cmpLoading').hide();
+    if(!r.ok){ $('#cmpError').text(r.error||'Erro.').show(); return; }
+
+    var songsA = SONGS;  // current playlist already in memory
+    var songsB = r.songs;
+    var bName  = $('#cmpSelB option:selected').text();
+
+    // Build key sets
+    var keysA = {}, keysB = {};
+    songsA.forEach(function(s){ var k=cmpKey(s.title,s.artist); keysA[k] = s; });
+    songsB.forEach(function(s){ var k=cmpKey(s.title,s.artist); keysB[k] = s; });
+
+    var onlyA = [], onlyB = [], both = [];
+    Object.keys(keysA).forEach(function(k){ if(keysB[k]) both.push(keysA[k]); else onlyA.push(keysA[k]); });
+    Object.keys(keysB).forEach(function(k){ if(!keysA[k]) onlyB.push(keysB[k]); });
+
+    function renderList(songs, container) {
+      var html = '';
+      songs.forEach(function(s){
+        html += '<div style="padding:4px 8px;border-radius:5px;background:var(--surface2)">'
+          + '<span style="font-weight:500">'+escH(s.title)+'</span>'
+          + (s.artist ? ' <span style="color:var(--text3);font-size:.72rem">— '+escH(s.artist)+'</span>' : '')
+          + '</div>';
+      });
+      $(container).html(html || '<div style="color:var(--text3);font-size:.75rem;padding:4px 8px">—</div>');
+    }
+
+    var anyDiff = onlyA.length || onlyB.length;
+
+    if(!anyDiff){
+      $('#cmpNoChanges').show();
+      $('#cmpOnlyAWrap,#cmpOnlyBWrap').hide();
+    } else {
+      $('#cmpNoChanges').hide();
+      if(onlyA.length){
+        $('#cmpOnlyATitle').text('Só em "' + <?= json_encode($activePl['name']??'') ?> + '" (' + onlyA.length + ')');
+        renderList(onlyA, '#cmpOnlyAList');
+        $('#cmpOnlyAWrap').show();
+      } else { $('#cmpOnlyAWrap').hide(); }
+
+      if(onlyB.length){
+        $('#cmpOnlyBTitle').text('Só em "' + bName + '" (' + onlyB.length + ')');
+        renderList(onlyB, '#cmpOnlyBList');
+        $('#cmpOnlyBWrap').show();
+      } else { $('#cmpOnlyBWrap').hide(); }
+    }
+
+    if(both.length){
+      $('#cmpBothTitle').text('Em ambas (' + both.length + ')');
+      renderList(both, '#cmpBothList');
+    }
+    $('#cmpBothWrap').toggle($('#cmpShowBoth').prop('checked') && both.length > 0);
+
+    $('#cmpResults').show();
+  }, 'json').fail(function(){
+    $('#cmpLoading').hide();
+    $('#cmpError').text('Erro de rede.').show();
+  });
+});
+
 </script>
+
 
 
 </body>
