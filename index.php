@@ -1084,12 +1084,10 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         }
         // Remove from local: DISABLED — sync never deletes local songs
         // $removeLocalIdx is intentionally ignored to protect user data
-        saveSongs($pl,$songs);
         // Add to Spotify — and back-fill metadata on local songs
         if($addSpot){
             $appTok2 = spotToken();
             $urisToAdd = [];
-            // Find local song index by title|artist key for back-filling
             $localIndexByKey = [];
             foreach($songs as $idx=>$s) $localIndexByKey[$s['title'].'|'.$s['artist']] = $idx;
             foreach($addSpot as $ta){
@@ -1097,7 +1095,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                 $full = spotSearchTrackFull($appTok2,$t,$a);
                 if($full){
                     $urisToAdd[] = $full['uri'];
-                    // Back-fill local song metadata
                     $localIdx = $localIndexByKey[$ta] ?? null;
                     if($localIdx !== null){
                         if(empty($songs[$localIdx]['spotify_url']))  $songs[$localIdx]['spotify_url']  = $full['spotify_url'];
@@ -1118,10 +1115,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                 $curUri = $sw['cur_uri']??'';
                 $newUri = $sw['new_uri']??'';
                 if(!$curUri || !$newUri) continue;
-                // Remove old, add new on Spotify
                 spotRemoveTracks($tok,$pl['spotify_id'],[$curUri]);
                 spotAddTracks($tok,$pl['spotify_id'],[$newUri]);
-                // Update local song
                 if($idx>=0 && isset($songs[$idx])){
                     $songs[$idx]['spotify_url']  = $sw['new_spotify_url'] ?? '';
                     $songs[$idx]['spotify_uri']  = $newUri;
@@ -1129,9 +1124,33 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     if(!empty($sw['new_duration_ms'])) $songs[$idx]['duration_ms'] = (int)$sw['new_duration_ms'];
                 }
             }
-            saveSongs($pl,$songs);
         }
-        jsonOut(['ok'=>true,'local_count'=>count($songs)]);
+        // Auto-fill duration_ms for any local songs still missing it
+        $appTok3 = null;
+        foreach($songs as $idx=>$s){
+            if(!empty($s['duration_ms'])) continue;
+            if(!$appTok3) $appTok3 = spotToken();
+            if(!$appTok3) break;
+            // Use existing spotify_uri if available, otherwise search
+            $uri = $s['spotify_uri'] ?? '';
+            if($uri && preg_match('/track[\/:]([A-Za-z0-9]{10,})/',$uri,$m)){
+                $ch=curl_init("https://api.spotify.com/v1/tracks/{$m[1]}");
+                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $appTok3"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>8]);
+                $d=json_decode(curl_exec($ch),true); curl_close($ch);
+                if(!empty($d['duration_ms'])) $songs[$idx]['duration_ms'] = (int)$d['duration_ms'];
+            } else {
+                $found = spotSearchTrackFull($appTok3, cleanTitle($s['title']), $s['artist']??'');
+                if($found && !empty($found['duration_ms'])){
+                    $songs[$idx]['duration_ms']  = $found['duration_ms'];
+                    if(empty($s['spotify_url']))  $songs[$idx]['spotify_url']  = $found['spotify_url'];
+                    if(empty($s['spotify_uri']))  $songs[$idx]['spotify_uri']  = $found['uri'];
+                }
+            }
+        }
+        // Single save at the end with all changes
+        saveSongs($pl,$songs);
+        $totalDur = array_sum(array_column($songs,'duration_ms'));
+        jsonOut(['ok'=>true,'local_count'=>count($songs),'total_duration_ms'=>$totalDur]);
     }
     // -- Preview import: search Spotify for each parsed song --
     if($act==='import_preview'){
@@ -3402,10 +3421,16 @@ $('#syncApplyBtn').on('click', function(){
   }, function(r){
     btn.prop('disabled',false).text('Aplicar Selecção');
     if(r.ok){
+      function fmtMsJs(ms){
+        if(!ms) return '';
+        var s=Math.round(ms/1000), h=Math.floor(s/3600), m=Math.floor((s%3600)/60);
+        return h>0 ? h+'h '+String(m).padStart(2,'0')+'m' : m+':'+ String(s%60).padStart(2,'0');
+      }
+      var dur = r.total_duration_ms ? ' · '+fmtMsJs(r.total_duration_ms) : '';
       $('#syncResult').removeClass('alert-err').addClass('alert-ok')
-        .text('✓ Sincronização aplicada! Lista local: '+r.local_count+' músicas.').show();
+        .text('✓ Sincronização aplicada! '+r.local_count+' músicas'+dur+'.').show();
       $('#syncApplyBtn').hide();
-      setTimeout(function(){ window.location.reload(); }, 1800);
+      setTimeout(function(){ window.location.reload(); }, 2200);
     } else {
       $('#syncResult').removeClass('alert-ok').addClass('alert-err').text(r.error||'Erro ao sincronizar.').show();
     }
