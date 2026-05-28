@@ -2233,30 +2233,6 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div id="importTextError" class="alert alert-err" style="display:none"></div>
     <div id="importTextResult" class="alert alert-ok" style="display:none"></div>
 
-    <!-- Spotify option (shown after successful import of new list) -->
-    <div id="importSpotWrap" style="display:none;border:1px solid var(--border2);border-radius:var(--r);padding:12px;margin-top:4px">
-      <div style="font-size:.78rem;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-        <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;color:var(--accent)"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
-        Criar também no Spotify?
-      </div>
-      <div style="font-size:.74rem;color:var(--text3);margin-bottom:10px">A lista foi criada localmente. Podes criar uma playlist no Spotify e sincronizar as músicas agora.</div>
-      <?php if(!$hasSpotUser): ?>
-        <?php if($spotOAuthLink): ?>
-        <a href="<?= htmlspecialchars($spotOAuthLink??'#') ?>" class="btn btn-outline" style="font-size:.75rem;display:inline-flex">
-          <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
-          Ligar conta Spotify primeiro
-        </a>
-        <?php else: ?>
-        <div style="font-size:.72rem;color:var(--text3)">Credenciais Spotify não configuradas.</div>
-        <?php endif; ?>
-      <?php else: ?>
-      <button class="btn btn-primary" id="importCreateSpotBtn" style="font-size:.78rem">
-        <svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
-        Criar Playlist no Spotify
-      </button>
-      <div id="importSpotResult" style="display:none;font-size:.74rem;margin-top:8px"></div>
-      <?php endif; ?>
-    </div>
 
     <div id="importDebugWrap" style="display:none;margin-top:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -3386,8 +3362,6 @@ $('#syncApplyBtn').on('click', function(){
 });
 
 // ── Import from text ──────────────────────────────────────────
-var _importedPlId = null;
-
 // ── Import debug helper ───────────────────────────────────────
 function importDebug(msg) {
   var ts = new Date().toLocaleTimeString('pt-PT', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -3401,10 +3375,9 @@ function importDebug(msg) {
 $('#importTextBtn').on('click', function(){
   console.log('[ImportDebug] Botão importar clicado. LOCKED='+LOCKED+' AUTHED='+AUTHED);
   guardedAction(function(){
-    _importedPlId = null;
     $('#importTextArea').val('');
     $('#importNewName').val('');
-    $('#importTextError,#importTextResult,#importSpotWrap').hide();
+    $('#importTextError,#importTextResult').hide();
     $('#importTextDoBtn').prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
     $('#importDestExisting').prop('checked',true);
     $('#importNewNameFg').hide();
@@ -3434,10 +3407,6 @@ $('#importTextArea').on('input', function(){
 });
 
 // ── Import text: step 1 = preview, step 2 = confirm + import ──
-var _importPreviewData = null;
-var _importDest = null;
-var _importName = null;
-
 $('#importTextDoBtn').on('click', function(){
   var txt  = $('#importTextArea').val().trim();
   var dest = $('input[name="importDest"]:checked').val();
@@ -3445,144 +3414,32 @@ $('#importTextDoBtn').on('click', function(){
   if(!txt){ $('#importTextError').text('Cola a lista primeiro.').show(); return; }
   if(dest==='new' && !name){ $('#importTextError').text('Define um nome para a nova lista.').show(); return; }
   $('#importTextError').hide();
-  _importDest = dest; _importName = name;
   var btn=$(this);
-  btn.prop('disabled',true).html('A verificar músicas…');
+  btn.prop('disabled',true).html('A importar…');
 
-  $.post('?pl='+PL_ID, {_action:'import_preview', pl:PL_ID, text:txt}, function(r){
-    btn.prop('disabled',false).html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Importar');
-    if(!r.ok){ $('#importTextError').text(r.error||'Erro.').show(); return; }
-    _importPreviewData = r.preview;
-    // Build confirmation modal content
-    var html = '';
-    r.preview.forEach(function(s, i){
-      var changed = s.found && (s.title !== s.input_title || s.artist !== s.input_artist);
-      var notFound = !s.found;
-      var pop = s.found ? '<span style="font-family:\'DM Mono\',monospace;font-size:.6rem;color:var(--text3);margin-left:6px" title="Popularidade no Spotify">&#9834;'+s.popularity+'</span>' : '';
-      var spotIcon = s.spotify_url
-        ? '<a href="'+s.spotify_url+'" target="_blank" style="color:#1db954;flex-shrink:0;display:flex" title="Abrir no Spotify"><svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg></a>'
-        : '';
-      var rowStyle = notFound ? 'background:rgba(220,60,60,.07)' : changed ? 'background:rgba(255,180,0,.06)' : '';
-      var titleHtml = notFound
-        ? '<span style="color:var(--text3);text-decoration:line-through">'+escH(s.input_title)+'</span> <span style="font-size:.65rem;color:var(--danger)">não encontrada</span>'
-        : changed
-          ? '<span style="font-size:.65rem;color:var(--text3);text-decoration:line-through">'+escH(s.input_title)+'</span><br><span style="font-weight:500">'+escH(s.title)+'</span>'
-          : '<span style="font-weight:500">'+escH(s.title)+'</span>';
-      var artistHtml = s.found ? escH(s.artist) : '';
-      html += '<label style="display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;'+rowStyle+'">'
-        + '<input type="checkbox" class="prev-check" data-i="'+i+'" '+(notFound?'':'checked')+' style="accent-color:var(--accent);margin-top:3px;flex-shrink:0">'
-        + '<span style="flex:1;min-width:0">'
-          + '<span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'+titleHtml+pop+'</span>'
-          + (artistHtml ? '<span style="font-size:.7rem;color:var(--text3)">'+artistHtml+'</span>' : '')
-        + '</span>'
-        + spotIcon
-        + '</label>';
-    });
-    $('#importConfirmList').html(html);
-    var found = r.preview.filter(function(s){ return s.found; }).length;
-    var notFound = r.preview.length - found;
-    var sub = r.count+' músicas encontradas';
-    if(notFound) sub += ' · <span style="color:var(--danger)">'+notFound+' não encontradas</span>';
-    $('#importConfirmSub').html(sub);
-    closeModal('importTextModal');
-    openModal('importConfirmModal');
+  var payload = { _action:'import_text', pl:PL_ID, text:txt };
+  if(dest==='new'){ payload.name = name; }
+  else { payload.target_id = PL_ID; }
+
+  $.post('?pl='+PL_ID, payload, function(r){
+    btn.prop('disabled',false).html('Importar');
+    if(r.ok){
+      closeModal('importTextModal');
+      if(dest==='new' && r.id){
+        window.location.href = '?pl=' + encodeURIComponent(r.id);
+      } else {
+        window.location.reload();
+      }
+    } else {
+      $('#importTextError').text(r.error||'Erro ao importar.').show();
+    }
   }, 'json').fail(function(xhr){
     btn.prop('disabled',false).html('Importar');
     $('#importTextError').text('Erro de rede ('+xhr.status+').').show();
   });
 });
 
-// ── Confirm import: import selected songs ──────────────────────
-$('#importConfirmDoBtn').on('click', function(){
-  var btn = $(this);
-  var selected = [];
-  $('.prev-check:checked').each(function(){
-    var i = parseInt($(this).data('i'));
-    if(_importPreviewData && _importPreviewData[i]) selected.push(_importPreviewData[i]);
-  });
-  if(!selected.length){ alert('Seleciona pelo menos uma música.'); return; }
-
-  // Guard: _importDest must be set (set during preview step)
-  if(!_importDest){ alert('Erro interno: destino não definido. Fecha e tenta novamente.'); return; }
-  if(_importDest==='new' && !_importName){ alert('Nome da lista em falta. Volta atrás e define um nome.'); return; }
-
-  btn.prop('disabled',true).text('A importar…');
-
-  var payload = {
-    _action   : 'import_text',
-    pl        : PL_ID,
-    text      : 'confirmed-import',
-    confirmed : JSON.stringify(selected)
-  };
-  if(_importDest==='new'){
-    payload.name = _importName;
-  } else {
-    payload.target_id = PL_ID;
-  }
-
-  $.post('?pl='+PL_ID, payload, function(r){
-    btn.prop('disabled',false).text('Confirmar Importação');
-    if(r.ok){
-      closeModal('importConfirmModal');
-      if(_importDest==='new' && r.id){
-        _importedPlId = r.id;
-        // Show Spotify option in importTextModal before navigating
-        $('#importSpotWrap').show();
-        $('#importCreateSpotBtn').data('pl-id', r.id).data('pl-name', r.name);
-        openModal('importTextModal');
-      }
-      var msg = _importDest==='new'
-        ? '✓ Lista "'+r.name+'" criada com '+r.added+' música'+(r.added===1?'':'s')+'!'
-        : '✓ '+r.added+' música'+(r.added===1?' adicionada':' adicionadas')+' à lista.';
-      toast(msg);
-      if(_importDest!=='new') setTimeout(function(){ window.location.reload(); }, 1100);
-    } else {
-      alert(r.error||'Erro ao importar.');
-    }
-  }, 'json').fail(function(xhr){
-    btn.prop('disabled',false).text('Confirmar Importação');
-    alert('Erro de rede ('+xhr.status+'). Verifica a ligação e tenta novamente.');
-  });
-});
-
-// Select/deselect all in confirm modal
-$('#importConfirmSelAll').on('click', function(){
-  $('.prev-check').prop('checked',true);
-});
-$('#importConfirmSelNone').on('click', function(){
-  $('.prev-check').prop('checked',false);
-});
-
 // ── Create Spotify playlist from imported list ────────────────
-$('#importCreateSpotBtn').on('click', function(){
-  var plId   = $(this).data('pl-id')   || _importedPlId;
-  var plName = $(this).data('pl-name') || $('#importNewName').val().trim();
-  var btn = $(this);
-  btn.prop('disabled',true).text('A criar no Spotify…');
-  $('#importSpotResult').hide();
-
-  $.post('?pl='+plId, {_action:'create_spot_playlist', pl:plId, name:plName, desc:'Importada via SetList'}, function(r){
-    btn.prop('disabled',false).html('<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg> Criar Playlist no Spotify');
-    if(r.ok){
-      var found = r.tracks_added+'/'+r.tracks_total;
-      var spotLink = r.spotify_url
-        ? ' <a href="'+r.spotify_url+'" target="_blank" style="color:var(--accent);text-decoration:none">Abrir no Spotify ↗</a>'
-        : '';
-      $('#importSpotResult').html('✓ Playlist criada! '+found+' músicas adicionadas.'+spotLink).css('color','var(--accent)').show();
-      btn.prop('disabled',true).text('Criada ✓');
-      // Navigate to the new playlist after a moment
-      setTimeout(function(){ window.location.href='?pl='+encodeURIComponent(plId); }, 2200);
-    } else if(r.error==='auth_required'){
-      $('#importSpotResult').html('Sessão Spotify expirada. <a href="'+window.location.href+'" style="color:var(--accent)">Recarrega</a> e tenta novamente.').css('color','var(--danger)').show();
-    } else {
-      $('#importSpotResult').text(r.error||'Erro ao criar playlist.').css('color','var(--danger)').show();
-      btn.prop('disabled',false);
-    }
-  }, 'json').fail(function(){
-    btn.prop('disabled',false);
-    $('#importSpotResult').text('Erro de rede.').css('color','var(--danger)').show();
-  });
-});
 
 // ── Mobile overflow menu ───────────────────────────────────────
 function closeOverflow(){ $('#tbOverflowMenu').removeClass('open'); }
@@ -3738,24 +3595,6 @@ function duplicatePl(id, name) {
 
 </script>
 
-<!-- Import confirmation modal -->
-<div class="modal-overlay" id="importConfirmModal">
-  <div class="modal" style="max-width:540px">
-    <div class="modal-title">Confirmar Importação</div>
-    <div class="modal-sub" id="importConfirmSub">Verifica as músicas encontradas antes de importar.</div>
-    <div class="modal-body">
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <button id="importConfirmSelAll" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Selecionar todas</button>
-        <button id="importConfirmSelNone" class="btn btn-outline" style="font-size:.7rem;padding:3px 9px">Desmarcar todas</button>
-      </div>
-      <div id="importConfirmList" style="border:1px solid var(--border2);border-radius:var(--r);padding:4px 4px"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('importConfirmModal');openModal('importTextModal')">← Voltar</button>
-      <button class="btn btn-primary" id="importConfirmDoBtn">Confirmar Importação</button>
-    </div>
-  </div>
-</div>
 
 </body>
 </html>
