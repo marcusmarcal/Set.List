@@ -885,6 +885,27 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         savePlaylists($pls); jsonOut(['ok'=>true]);
     }
 
+    // ── Archive / Unarchive playlist ──
+    if($act==='archive_pl'||$act==='unarchive_pl'){
+        needAuth();
+        $pls=loadPlaylists(); $tid=$_POST['target_id']??'';
+        $archive=($act==='archive_pl');
+        foreach($pls as &$p){
+            if($p['id']!==$tid) continue;
+            if($archive){ $p['archived']=true; }
+            else { unset($p['archived']); }
+        } unset($p);
+        // If archiving the default, promote next active as default
+        if($archive){
+            $hasDefault=false;
+            foreach($pls as $p) if(!empty($p['is_default'])&&empty($p['archived'])) $hasDefault=true;
+            if(!$hasDefault){
+                foreach($pls as &$p){ if(empty($p['archived'])){ $p['is_default']=true; break; } } unset($p);
+            }
+        }
+        savePlaylists($pls); jsonOut(['ok'=>true]);
+    }
+
     // ── Import ──
     if($act==='import'){
         needAuth();
@@ -1436,7 +1457,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
 /* ── SIDEBAR ── */
 .sidebar{
-  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:400px;
+  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:230px;
   background:var(--bg2);border-right:1px solid var(--border);
   display:flex;flex-direction:column;z-index:100;overflow-y:auto;
   transition:transform var(--tr);
@@ -1831,11 +1852,39 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 }
 @keyframes bulkSlideUp { from { opacity:0; transform:translateX(-50%) translateY(14px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
 
+/* ── Archived playlists section ── */
+.sb-archived{
+  border-top:1px solid var(--border);
+  margin:8px 0 0;
+  padding:6px 0 0;
+}
+.sb-archived-toggle{
+  width:100%;display:flex;align-items:center;gap:6px;
+  background:none;border:none;cursor:pointer;
+  padding:6px 12px;color:var(--text3);font-size:.68rem;
+  letter-spacing:.08em;text-transform:uppercase;
+  border-radius:var(--r);transition:background var(--tr),color var(--tr);
+}
+.sb-archived-toggle:hover{background:var(--bg3);color:var(--text2)}
+.sb-archived-count{
+  margin-left:2px;background:var(--bg3);color:var(--text3);
+  font-size:.6rem;padding:1px 5px;border-radius:8px;
+}
+.sb-archived-chevron{width:12px;height:12px;margin-left:auto;transition:transform var(--tr)}
+.sb-archived-toggle.open .sb-archived-chevron{transform:rotate(180deg)}
+.sb-archived-list{
+  list-style:none;padding:4px 0 0;margin:0;
+  display:flex;flex-direction:column;gap:2px;
+}
+.pl-item-archived .pl-name-text{opacity:.55}
+.pl-item-archived:hover .pl-name-text{opacity:.8}
+
 </style>
-</head>
 <body>
 
 <?php // ── SIDEBAR ──────────────────────────────────────────────
+$activePlaylists  = array_values(array_filter($playlists, fn($p)=>empty($p['archived'])));
+$archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['archived'])));
 ?>
 <aside class="sidebar" id="sidebar">
   <div class="sb-logo">
@@ -1846,7 +1895,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   <div class="sb-pls">
     <div class="sb-sec" style="margin-bottom:10px">Listas</div>
     <ul id="plSortable" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:2px">
-      <?php foreach($playlists as $idx=>$pl):
+      <?php foreach($activePlaylists as $idx=>$pl):
         $isAct = ($pl['id']===$plId);
         $sUrl  = $pl['spotify_url']??('https://open.spotify.com/playlist/'.$pl['spotify_id']);
       ?>
@@ -1883,7 +1932,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <span class="pl-act-btn" onclick="duplicatePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Duplicar lista">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </span>
-            <?php if(count($playlists)>1): ?>
+            <span class="pl-act-btn" onclick="archivePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Arquivar lista">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+            </span>
+            <?php if(count($activePlaylists)>1): ?>
             <span class="pl-act-btn danger" onclick="deletePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Remover">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
             </span>
@@ -1894,6 +1946,40 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <?php endforeach; ?>
     </ul>
   </div>
+
+  <?php if(!empty($archivedPlaylists)): ?>
+  <!-- Archived playlists section -->
+  <div class="sb-archived" id="sbArchivedSection">
+    <button class="sb-archived-toggle" id="sbArchivedToggle" onclick="toggleArchivedSection()">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;flex-shrink:0"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+      Arquivadas
+      <span class="sb-archived-count"><?= count($archivedPlaylists) ?></span>
+      <svg class="sb-archived-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <ul class="sb-archived-list" id="sbArchivedList" style="display:none">
+      <?php foreach($archivedPlaylists as $pl):
+        $isAct = ($pl['id']===$plId);
+      ?>
+      <li>
+        <div class="pl-item pl-item-archived <?= $isAct?'active':'' ?>">
+          <button class="pl-name-btn" onclick="switchPl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>')">
+            <span class="pl-dot" style="background:var(--text3)"></span>
+            <span class="pl-name-text" style="color:var(--text3)"><?= htmlspecialchars($pl['name']) ?></span>
+          </button>
+          <span class="pl-actions">
+            <span class="pl-act-btn" style="color:var(--accent)" onclick="unarchivePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Desarquivar">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+            </span>
+            <span class="pl-act-btn danger" onclick="deletePl('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Remover permanentemente">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+            </span>
+          </span>
+        </div>
+      </li>
+      <?php endforeach; ?>
+    </ul>
+  </div>
+  <?php endif; ?>
 
   <div class="sb-bottom">
     <?php if($locked): ?>
@@ -2440,7 +2526,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <div class="fg">
       <label class="fl">Listas de origem <span style="color:var(--danger)">*</span></label>
       <div id="mergePlList" style="display:flex;flex-direction:column;gap:5px;max-height:180px;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--r);padding:8px">
-        <?php foreach($playlists as $p): ?>
+        <?php foreach($activePlaylists as $p): ?>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem">
           <input type="checkbox" class="merge-pl-check" value="<?= htmlspecialchars($p['id'],ENT_QUOTES) ?>" style="accent-color:var(--accent)">
           <span><?= htmlspecialchars($p['name']) ?></span>
@@ -3140,6 +3226,34 @@ function deletePl(id,name){
   });
 }
 
+// ── Archive / Unarchive ────────────────────────────────────────
+function archivePl(id,name){
+  guardedAction(function(){
+    if(!confirm('Arquivar "'+name+'"?\n\nA lista ficará oculta de todas as funções até ser desarquivada.')) return;
+    $.post('?pl='+PL_ID,{_action:'archive_pl',target_id:id,pl:PL_ID},function(r){
+      if(r.ok){
+        // If archiving the current playlist, redirect to root
+        if(id===PL_ID) window.location.href='?';
+        else window.location.reload();
+      }
+    },'json');
+  });
+}
+function unarchivePl(id,name){
+  guardedAction(function(){
+    $.post('?pl='+PL_ID,{_action:'unarchive_pl',target_id:id,pl:PL_ID},function(r){
+      if(r.ok){ window.location.reload(); }
+    },'json');
+  });
+}
+function toggleArchivedSection(){
+  var list=$('#sbArchivedList');
+  var btn=$('#sbArchivedToggle');
+  var open=list.is(':visible');
+  list.toggle(!open);
+  btn.toggleClass('open',!open);
+}
+
 // ── Import ─────────────────────────────────────────────────────
 function openImportModal(plId,plName){
   guardedAction(function(){
@@ -3219,7 +3333,7 @@ function doPrint() {
 }
 
 var HAS_SPOT_USER = <?= $hasSpotUser?'true':'false' ?>;
-var ALL_PLS = <?= json_encode(array_map(function($p){ return ['id'=>$p['id'],'name'=>$p['name']]; }, $playlists), JSON_UNESCAPED_UNICODE) ?>;
+var ALL_PLS = <?= json_encode(array_map(function($p){ return ['id'=>$p['id'],'name'=>$p['name']]; }, $activePlaylists), JSON_UNESCAPED_UNICODE) ?>;
 var ALL_PLS_META = <?= json_encode(array_reduce($playlists, function($carry,$p){
     $carry[$p['id']] = [
         'tags'        => $p['tags'] ?? [],
