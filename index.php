@@ -95,6 +95,7 @@ function loadSongs($pl) {
         $leg = __DIR__ . '/songs.json';
         if (!empty($pl['is_default']) && file_exists($leg)) {
             $d = json_decode(file_get_contents($leg), true) ?: [];
+            ensureSongIds($d);
             file_put_contents($f, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
             return $d;
         }
@@ -102,10 +103,44 @@ function loadSongs($pl) {
     }
     $raw = file_get_contents($f);
     $d   = json_decode($raw, true);
-    return is_array($d) ? $d : [];
+    if (!is_array($d)) return [];
+    // Assign IDs to any songs that don't have one yet (one-time migration)
+    $needsSave = false;
+    foreach ($d as $s) { if (empty($s['id'])) { $needsSave = true; break; } }
+    if ($needsSave) {
+        ensureSongIds($d);
+        file_put_contents($f, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+    }
+    return $d;
 }
 function saveSongs($pl, $d) {
     file_put_contents(songsFile($pl), json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));
+}
+
+// ── Song ID helpers ──────────────────────────────────────────────
+function newSongId() {
+    // sid_ + 8 hex chars — enough for millions of songs without collision
+    return 'sid_' . bin2hex(random_bytes(4));
+}
+function ensureSongIds(array &$songs): void {
+    $seen = [];
+    foreach ($songs as &$s) {
+        if (empty($s['id'])) $s['id'] = newSongId();
+        // Fix accidental duplicates in existing data
+        while (isset($seen[$s['id']])) $s['id'] = newSongId();
+        $seen[$s['id']] = true;
+    }
+    unset($s);
+}
+function songDupExists(array $haystack, array $needle): bool {
+    $needleId = $needle['id'] ?? null;
+    $needleKey = trackMatchKey($needle['title'] ?? '', $needle['artist'] ?? '');
+    foreach ($haystack as $s) {
+        // Match by ID first (exact), then by normalised title+artist
+        if ($needleId && !empty($s['id']) && $s['id'] === $needleId) return true;
+        if (trackMatchKey($s['title'] ?? '', $s['artist'] ?? '') === $needleKey)  return true;
+    }
+    return false;
 }
 
 function sortSongs($songs, $col, $ord='asc') {
@@ -249,7 +284,7 @@ function spotTracks($tok,$plId) {
             $t=$item['track']??null;
             if(!$t||empty($t['name'])) continue;
             $rawName = $t['name'];
-            $songs[]=['title'=>$rawName,'title_display'=>cleanTitle($rawName),
+            $songs[]=['id'=>newSongId(),'title'=>$rawName,'title_display'=>cleanTitle($rawName),
                       'artist'=>$t['artists'][0]['name']??'',
                       'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
                       'duration_ms'=>(int)($t['duration_ms']??0),
@@ -611,10 +646,13 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $title=trim($_POST['title']??''); $artist=trim($_POST['artist']??'');
         $cu=trim($_POST['cifra_url']??''); $cs=trim($_POST['cifra_source']??'cifraclub');
         if($title&&$artist){
-            $songs[]=['title'=>$title,'artist'=>$artist,'cifra_url'=>$cu?:'N/A','cifra_source'=>$cs];
+            $newSong=['id'=>newSongId(),'title'=>$title,'artist'=>$artist,'cifra_url'=>$cu?:'N/A','cifra_source'=>$cs];
+            if(songDupExists($songs,$newSong))
+                jsonOut(['ok'=>false,'error'=>'Esta música já existe nesta lista.']);
+            $songs[]=$newSong;
             saveSongs($pl,$songs);
             $idx=count($songs)-1;
-            jsonOut(['ok'=>true,'index'=>$idx,'title'=>$title,'artist'=>$artist,
+            jsonOut(['ok'=>true,'index'=>$idx,'id'=>$newSong['id'],'title'=>$title,'artist'=>$artist,
                      'cifra_url'=>cifraUrl($songs[$idx]),'cifra_label'=>cifraLabel($songs[$idx])]);
         }
         jsonOut(['ok'=>false,'error'=>'Título e artista são obrigatórios.']);
@@ -643,12 +681,9 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
         $song = $songs[$i];
         $destSongs = loadSongs($destPl);
-        // Check duplicate
-        foreach($destSongs as $s){
-            if(strtolower($s['title']??'')==strtolower($song['title']??'') &&
-               strtolower($s['artist']??'')==strtolower($song['artist']??'')){
-                jsonOut(['ok'=>false,'error'=>'A música já existe na lista destino.']);
-            }
+        // Check duplicate by ID or title+artist
+        if(songDupExists($destSongs, $song)){
+            jsonOut(['ok'=>false,'error'=>'A música já existe na lista destino.']);
         }
         $destSongs[] = $song;
         saveSongs($destPl, $destSongs);
@@ -669,14 +704,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
         $song = $songs[$i];
         $destSongs = loadSongs($destPl);
-        // Check duplicate
-        $alreadyExists = false;
-        foreach($destSongs as $s){
-            if(strtolower($s['title']??'')==strtolower($song['title']??'') &&
-               strtolower($s['artist']??'')==strtolower($song['artist']??'')){
-                $alreadyExists = true; break;
-            }
-        }
+        // Check duplicate by ID or title+artist
+        $alreadyExists = songDupExists($destSongs, $song);
         if(!$alreadyExists) $destSongs[] = $song;
         // Remove from source
         array_splice($songs,$i,1);
@@ -733,10 +762,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         foreach($indices as $i){
             if(!isset($songs[(int)$i])) continue;
             $s=$songs[(int)$i];
-            $dup=false;
-            foreach($destSongs as $d)
-                if(strtolower($d['title']??'')==strtolower($s['title']??'')&&strtolower($d['artist']??'')==strtolower($s['artist']??'')){$dup=true;break;}
-            if($dup){$skipped++;continue;}
+            if(songDupExists($destSongs,$s)){$skipped++;continue;}
             $destSongs[]=$s; $added++;
         }
         saveSongs($destPl,$destSongs);
@@ -761,10 +787,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             $i=(int)$i;
             if(!isset($songs[$i])) continue;
             $s=$songs[$i];
-            $dup=false;
-            foreach($destSongs as $d)
-                if(strtolower($d['title']??'')==strtolower($s['title']??'')&&strtolower($d['artist']??'')==strtolower($s['artist']??'')){$dup=true;break;}
-            if(!$dup){$destSongs[]=$s;$added++;}else{$skipped++;}
+            if(!songDupExists($destSongs,$s)){$destSongs[]=$s;$added++;}else{$skipped++;}
             $toRemove[]=$i;
         }
         // Remove from source (reverse order to keep indices valid)
@@ -959,8 +982,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $mode=$_POST['mode']??'replace';
         if($mode==='merge'){
             $ex=loadSongs($targetPl);
-            $keys=array_map(function($s){ return trackMatchKey($s['title'],$s['artist']); },$ex);
-            foreach($tracks as $t) if(!in_array(trackMatchKey($t['title'],$t['artist']),$keys)) $ex[]=$t;
+            foreach($tracks as $t) if(!songDupExists($ex,$t)) $ex[]=$t;
             saveSongs($targetPl,$ex); $cnt=count($ex);
         } else { saveSongs($targetPl,$tracks); $cnt=count($tracks); }
         jsonOut(['ok'=>true,'count'=>$cnt,'name'=>$targetPl['name'],'pl_id'=>$tid]);
@@ -973,13 +995,13 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $pls = loadPlaylists();
         $slug = newPlId();
         $newPl = ['id'=>$slug,'name'=>$newName,'spotify_id'=>'','is_default'=>false];
-        $merged = []; $seen = [];
+        $merged = [];
         foreach($sourceIds as $sid){
             $srcPl=null; foreach($pls as $p) if($p['id']===$sid){$srcPl=$p;break;}
             if(!$srcPl) continue;
             foreach(loadSongs($srcPl) as $s){
-                $key = trackMatchKey($s['title'],$s['artist']);
-                if(!isset($seen[$key])){ $seen[$key]=true; $merged[]=$s; }
+                if(!empty($s['id']) && empty($s['id'])) $s['id']=newSongId();
+                if(!songDupExists($merged,$s)) $merged[]=$s;
             }
         }
         $pls[]=$newPl; savePlaylists($pls);
@@ -1155,7 +1177,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     $d=json_decode(curl_exec($ch),true); curl_close($ch);
                     if(!empty($d['name'])){
                         $rawName=$d['name'];
-                        $songs[]=['title'=>$rawName,'title_display'=>cleanTitle($rawName),
+                        $songs[]=['id'=>newSongId(),'title'=>$rawName,'title_display'=>cleanTitle($rawName),
                                   'artist'=>$d['artists'][0]['name']??'','cifra_url'=>'N/A','cifra_source'=>'cifraclub',
                                   'duration_ms'=>(int)($d['duration_ms']??0),
                                   'spotify_url'=>$d['external_urls']['spotify']??'',
@@ -1331,16 +1353,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             foreach($pls as $p) if($p['id']===$addToExisting){$targetPl=$p;break;}
             if(!$targetPl) jsonOut(['ok'=>false,'error'=>'Lista nao encontrada.']);
             $existing=loadSongs($targetPl);
-            $seen=[]; foreach($existing as $s) $seen[strtolower($s['title'].'|'.$s['artist'])]=true;
             $added=0;
             foreach($parsed as $s){
-                $key=strtolower(($s['title']??'').'|'.($s['artist']??''));
-                if(!isset($seen[$key])){
-                    $existing[]=['title'=>$s['title']??'','artist'=>$s['artist']??'',
-                        'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
-                        'duration_ms'=>(int)($s['duration_ms']??0),
-                        'spotify_url'=>$s['spotify_url']??''];
-                    $added++; $seen[$key]=true;
+                $newSong=['id'=>newSongId(),'title'=>$s['title']??'','artist'=>$s['artist']??'',
+                    'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
+                    'duration_ms'=>(int)($s['duration_ms']??0),
+                    'spotify_url'=>$s['spotify_url']??''];
+                if(!songDupExists($existing,$newSong)){
+                    $existing[]=$newSong; $added++;
                 }
             }
             $f=songsFile($targetPl);
@@ -1350,7 +1370,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             if(!$newName) jsonOut(['ok'=>false,'error'=>'Define um nome para a nova lista.']);
             $pls=loadPlaylists(); $slug=newPlId();
             $songs=array_map(function($s){
-                return ['title'=>$s['title']??'','artist'=>$s['artist']??'',
+                return ['id'=>newSongId(),'title'=>$s['title']??'','artist'=>$s['artist']??'',
                     'cifra_url'=>'N/A','cifra_source'=>'cifraclub',
                     'duration_ms'=>(int)($s['duration_ms']??0),'spotify_url'=>$s['spotify_url']??''];
             },$parsed);
@@ -1489,7 +1509,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
 /* ── SIDEBAR ── */
 .sidebar{
-  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:400px;
+  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:450px;
   background:var(--bg2);border-right:1px solid var(--border);
   display:flex;flex-direction:column;z-index:100;overflow-y:auto;
   transition:transform var(--tr);
@@ -2221,6 +2241,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             $isAuto = (!$cr || $cr==='N/A') && $cu;  // true = slug-generated, not manually saved
           ?>
           <tr data-i="<?= $i ?>"
+              data-sid="<?= htmlspecialchars($song['id']??'',ENT_QUOTES) ?>"
               data-title="<?= htmlspecialchars($song['title'],ENT_QUOTES) ?>"
               data-artist="<?= htmlspecialchars($song['artist'],ENT_QUOTES) ?>"
               data-cifra-url="<?= htmlspecialchars($cr,ENT_QUOTES) ?>"
