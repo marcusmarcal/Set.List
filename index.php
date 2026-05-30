@@ -685,6 +685,38 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'dest_name'=>$destPl['name'],'src_total'=>count($songs),'already_existed'=>$alreadyExists]);
     }
 
+    // ── Create new playlist then bulk copy/move songs into it ──
+    if($act==='create_and_copy' || $act==='create_and_move'){
+        needAuth();
+        $newName = trim($_POST['new_pl_name']??'');
+        $indices = json_decode($_POST['indices']??'[]',true);
+        if(!$newName) jsonOut(['ok'=>false,'error'=>'O nome da nova lista é obrigatório.']);
+        if(!is_array($indices)||!count($indices)) jsonOut(['ok'=>false,'error'=>'Nenhuma música selecionada.']);
+        // Create the new playlist
+        $pls = loadPlaylists();
+        $newId = newPlId();
+        $newPl = ['id'=>$newId,'name'=>$newName,'spotify_id'=>'','is_default'=>false,'tags'=>[],'is_event'=>false];
+        $pls[] = $newPl;
+        savePlaylists($pls);
+        saveSongs($newPl, []);
+        // Now copy/move the songs
+        $srcPl = getActivePl();
+        $songs = loadSongs($srcPl);
+        $destSongs = [];
+        $added = 0;
+        foreach($indices as $i){
+            if(!isset($songs[(int)$i])) continue;
+            $destSongs[] = $songs[(int)$i]; $added++;
+        }
+        saveSongs($newPl, $destSongs);
+        if($act==='create_and_move'){
+            $toRemove = array_map('intval',$indices); rsort($toRemove);
+            foreach($toRemove as $i) array_splice($songs,$i,1);
+            saveSongs($srcPl,$songs);
+        }
+        jsonOut(['ok'=>true,'added'=>$added,'dest_name'=>$newName,'dest_id'=>$newId,'moved'=>($act==='create_and_move')]);
+    }
+
     // ── Bulk copy songs to another playlist ──
     if($act==='copy_songs_bulk'){
         needAuth();
@@ -2702,6 +2734,8 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
   <select id="bulkDestSel">
     <option value="">— Lista destino —</option>
   </select>
+  <input type="text" id="bulkNewListName" placeholder="Nome da nova lista…"
+    style="display:none;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);padding:5px 10px;font-size:.75rem;min-width:160px;outline:none">
   <button id="bulkCopyBtn" class="btn btn-outline" style="font-size:.72rem;padding:5px 11px;flex-shrink:0">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
     Copiar
@@ -3826,14 +3860,46 @@ function populateBulkDest(){
   otherPls.forEach(function(p){
     html += '<option value="'+escH(p.id)+'">'+escH(p.name)+'</option>';
   });
+  html += '<option value="__new__">＋ Nova lista…</option>';
   $('#bulkDestSel').html(html);
 }
+
+$('#bulkDestSel').on('change', function(){
+  var isNew = $(this).val() === '__new__';
+  $('#bulkNewListName').toggle(isNew);
+  if(isNew) setTimeout(function(){ $('#bulkNewListName').focus(); }, 50);
+});
 
 function bulkAction(action){
   var indices = getSelectedIndices();
   var destId  = $('#bulkDestSel').val();
   if(!indices.length){ toast('Seleciona pelo menos uma música.'); return; }
   if(!destId){ toast('Escolhe a lista destino.'); $('#bulkDestSel').focus(); return; }
+
+  // Creating a new list
+  if(destId === '__new__'){
+    var newName = $('#bulkNewListName').val().trim();
+    if(!newName){ toast('Escreve o nome da nova lista.'); $('#bulkNewListName').focus(); return; }
+    guardedAction(function(){
+      var btn = action==='copy' ? $('#bulkCopyBtn') : $('#bulkMoveBtn');
+      btn.prop('disabled',true);
+      $.post('?pl='+PL_ID, {
+        _action: action==='copy' ? 'create_and_copy' : 'create_and_move',
+        new_pl_name: newName,
+        indices: JSON.stringify(indices)
+      }, function(r){
+        btn.prop('disabled',false);
+        if(r.ok){
+          var verb = action==='copy' ? 'copiada' : 'movida';
+          var verbP = action==='copy' ? 'copiadas' : 'movidas';
+          toast(r.added+' música'+(r.added===1?' '+verb:' '+verbP)+' para nova lista "'+r.dest_name+'".');
+          setTimeout(function(){ window.location.reload(); }, 900);
+        } else { alert(r.error||'Erro.'); }
+      },'json').fail(function(){ btn.prop('disabled',false); alert('Erro de rede.'); });
+    });
+    return;
+  }
+
   var destName = $('#bulkDestSel option:selected').text();
   guardedAction(function(){
     var btn = action==='copy' ? $('#bulkCopyBtn') : $('#bulkMoveBtn');
@@ -3882,6 +3948,8 @@ $(function(){
     $('.song-check').prop('checked', false);
     $('.song-row').removeClass('is-selected');
     $('#checkAll').prop('checked',false).prop('indeterminate',false);
+    $('#bulkDestSel').val('');
+    $('#bulkNewListName').hide().val('');
     updateBulkBar();
   });
 
