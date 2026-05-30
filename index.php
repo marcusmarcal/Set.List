@@ -794,6 +794,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         needAuth();
         $spotId=trim($_POST['spotify_id']??'');
         $manualName=trim($_POST['name']??'');
+        $newTags=trim($_POST['tags']??'');
+        $isEvent=($_POST['is_event']??'0')==='1';
+        $eventName=trim($_POST['event_name']??'');
+        $eventLocal=trim($_POST['event_local']??'');
+        $eventDate=trim($_POST['event_date']??'');
+        $tagsArr=$newTags!=='' ? array_values(array_filter(array_map('trim', explode(',', $newTags)))) : [];
+        $extraMeta=['tags'=>$tagsArr,'is_event'=>$isEvent];
+        if($isEvent){ $extraMeta['event_name']=$eventName; $extraMeta['event_local']=$eventLocal; $extraMeta['event_date']=$eventDate; }
 
         if($spotId){
             // With Spotify ID
@@ -804,8 +812,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             $name=$manualName?:$info['name'];
             $pls=loadPlaylists();
             $slug=newPlId();
-            $newPl=['id'=>$slug,'name'=>$name,'spotify_id'=>$spotId,
-                    'spotify_url'=>$info['url'],'is_default'=>count($pls)===0];
+            $newPl=array_merge(['id'=>$slug,'name'=>$name,'spotify_id'=>$spotId,
+                    'spotify_url'=>$info['url'],'is_default'=>count($pls)===0], $extraMeta);
             $pls[]=$newPl; savePlaylists($pls);
             $tracks=spotTracks($tok,$spotId);
             if($tracks) saveSongs($newPl,$tracks);
@@ -816,7 +824,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             if(!$manualName) jsonOut(['ok'=>false,'error'=>'O nome é obrigatório.']);
             $pls=loadPlaylists();
             $slug=newPlId();
-            $newPl=['id'=>$slug,'name'=>$manualName,'spotify_id'=>'','is_default'=>count($pls)===0];
+            $newPl=array_merge(['id'=>$slug,'name'=>$manualName,'spotify_id'=>'','is_default'=>count($pls)===0], $extraMeta);
             $pls[]=$newPl; savePlaylists($pls);
             saveSongs($newPl,[]);
             jsonOut(['ok'=>true,'id'=>$slug,'name'=>$manualName,'spotify_url'=>'','track_count'=>0]);
@@ -829,9 +837,30 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $pls=loadPlaylists(); $tid=$_POST['target_id']??'';
         $newSpotId=trim($_POST['spotify_id']??'');
         $newName=trim($_POST['name']??'');
+        $newTags=trim($_POST['tags']??'');
+        $isEvent=($_POST['is_event']??'0')==='1';
+        $eventName=trim($_POST['event_name']??'');
+        $eventLocal=trim($_POST['event_local']??'');
+        $eventDate=trim($_POST['event_date']??'');
         foreach($pls as &$p){
             if($p['id']!==$tid) continue;
             if($newName) $p['name']=$newName;
+            // Tags: store as array
+            if($newTags!==''){
+                $tagsArr=array_values(array_filter(array_map('trim', explode(',', $newTags))));
+                $p['tags']=$tagsArr;
+            } else {
+                $p['tags']=[];
+            }
+            // Event data
+            $p['is_event']=$isEvent;
+            if($isEvent){
+                $p['event_name']=$eventName;
+                $p['event_local']=$eventLocal;
+                $p['event_date']=$eventDate;
+            } else {
+                unset($p['event_name'],$p['event_local'],$p['event_date']);
+            }
             if($newSpotId&&$newSpotId!==$p['spotify_id']){
                 $tok=spotToken();
                 if($tok){$info=spotPlInfo($tok,$newSpotId);
@@ -1674,6 +1703,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .cp-toast{display:none!important}
   th:nth-child(1),td:nth-child(1){display:none!important}
   .badge{display:none!important}
+  /* Hide cifra column on print */
+  .td-cifra{display:none!important}
+  thead th.th-cifra-print{display:none!important}
 
   @page{margin:1.4cm 1.6cm;size:A4 portrait}
   body{font-family:'DM Sans',sans-serif!important}
@@ -1682,6 +1714,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
   /* Print header */
   .print-header{display:block!important;margin-bottom:18px}
+  .print-event-info{display:flex!important;gap:16px;flex-wrap:wrap;font-family:'DM Mono',monospace;font-size:.62rem;color:#555!important;margin:5px 0 10px;letter-spacing:.04em}
 
   /* Stat cards — only 2: Temas + Duração */
   .print-stats{display:flex!important;gap:10px;margin-bottom:18px;max-width:340px}
@@ -1727,7 +1760,13 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .print-header{display:none}
 .print-header h2{font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;margin:0 0 3px 0;color:#111;letter-spacing:-.01em}
 .print-header p{font-family:'DM Mono',monospace;font-size:.6rem;color:#888;margin:0 0 10px 0;letter-spacing:.07em;text-transform:uppercase}
+.print-event-info{display:flex;gap:14px;flex-wrap:wrap;font-family:'DM Mono',monospace;font-size:.65rem;color:#555;margin:4px 0 8px;letter-spacing:.04em}
 .print-stats{display:none}
+
+/* pl tags */
+.pl-tags-row{display:flex;flex-wrap:wrap;gap:3px;padding:0 8px 4px 26px}
+.pl-tag{font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.07em;text-transform:uppercase;background:var(--bg3);color:var(--text3);border:1px solid var(--border2);padding:1px 5px;border-radius:3px}
+.pl-event-badge{font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.08em;text-transform:uppercase;background:rgba(240,160,80,.13);color:#f0a050;border:1px solid rgba(240,160,80,.3);padding:1px 4px;border-radius:3px;flex-shrink:0}
 
 /* print modal */
 #printModal .modal{max-width:340px}
@@ -1816,7 +1855,15 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <span class="pl-dot"></span>
             <span class="pl-name-text"><?= htmlspecialchars($pl['name']) ?></span>
             <?php if($idx===0): ?><span class="pl-def-badge">padrão</span><?php endif; ?>
+            <?php if(!empty($pl['is_event'])): ?><span class="pl-event-badge">evento</span><?php endif; ?>
           </button>
+          <?php if(!empty($pl['tags'])): ?>
+          <div class="pl-tags-row">
+            <?php foreach($pl['tags'] as $tag): ?>
+            <span class="pl-tag"><?= htmlspecialchars($tag) ?></span>
+            <?php endforeach; ?>
+          </div>
+          <?php endif; ?>
           <span class="pl-actions">
             <?php if(!empty($pl['spotify_id'])): ?>
             <span class="pl-act-btn" onclick="openImportModal('<?= htmlspecialchars($pl['id'],ENT_QUOTES) ?>','<?= htmlspecialchars($pl['name'],ENT_QUOTES) ?>')" title="Importar do Spotify">
@@ -1886,6 +1933,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
         <div class="tb-sub">
           <?= $totalSongs ?> músicas<?= $durStr?' · '.$durStr:'' ?>
           <?php if(!empty($activePl['is_default'])): ?> · <span style="color:var(--accent)">✦ padrão</span><?php endif; ?>
+          <?php if(!empty($activePl['is_event'])): ?>
+            <?php if(!empty($activePl['event_date'])): ?> · <span style="color:#f0a050">📅 <?= htmlspecialchars($activePl['event_date']) ?></span><?php endif; ?>
+            <?php if(!empty($activePl['event_local'])): ?> · <span style="color:var(--text2)">📍 <?= htmlspecialchars($activePl['event_local']) ?></span><?php endif; ?>
+          <?php endif; ?>
         </div>
       </div>
     </div>
@@ -1966,6 +2017,13 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     <!-- Print-only header (hidden on screen) -->
     <div class="print-header" id="printHeader">
       <h2><?= htmlspecialchars($activePl['name']??'SetList') ?></h2>
+      <?php if(!empty($activePl['is_event'])): ?>
+      <div class="print-event-info">
+        <?php if(!empty($activePl['event_name'])): ?><span><?= htmlspecialchars($activePl['event_name']) ?></span><?php endif; ?>
+        <?php if(!empty($activePl['event_local'])): ?><span>📍 <?= htmlspecialchars($activePl['event_local']) ?></span><?php endif; ?>
+        <?php if(!empty($activePl['event_date'])): ?><span>📅 <?= htmlspecialchars($activePl['event_date']) ?></span><?php endif; ?>
+      </div>
+      <?php endif; ?>
       <p><span id="printDateSpan"></span></p>
       <hr style="border:none;border-top:1.5px solid #111;margin-bottom:14px">
     </div>
@@ -2016,7 +2074,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
             <th class="td-num">#</th>
             <th>Título</th>
             <th>Artista</th>
-            <th class="td-cifra">Cifra</th>
+            <th class="td-cifra th-cifra-print">Cifra</th>
             <th class="td-spot"></th>
             <th class="th-dur-print" style="display:none">Duração</th>
             <th class="td-actions">Ações</th>
@@ -2217,6 +2275,21 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <input class="fi" type="text" id="plSpotRaw" placeholder="4pcomesNQA6… ou https://open.spotify.com/playlist/…" autocomplete="off">
       <div class="ls" id="plLookupStatus"></div>
     </div>
+    <div class="fg">
+      <label class="fl">Tags <span style="font-size:.65rem;color:var(--text3)">(separadas por vírgula)</span></label>
+      <input class="fi" type="text" id="plTags" placeholder="Ex: rock, acústico, casamento" autocomplete="off">
+    </div>
+    <div class="fg">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;margin-bottom:10px">
+        <input type="checkbox" id="plIsEvent" style="accent-color:var(--accent)">
+        <span>Esta lista é um <strong>evento</strong></span>
+      </label>
+      <div id="plEventFields" style="display:none;flex-direction:column;gap:10px">
+        <input class="fi" type="text" id="plEventName" placeholder="Nome do evento (ex: Casamento João & Maria)">
+        <input class="fi" type="text" id="plEventLocal" placeholder="Local (ex: Quinta da Ribeira, Aveiro)">
+        <input class="fi" type="date" id="plEventDate">
+      </div>
+    </div>
     <div id="plAddError" class="alert alert-err" style="display:none"></div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('addPlModal')">Cancelar</button>
@@ -2238,6 +2311,21 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <label class="fl">ID da Playlist Spotify</label>
       <input class="fi" type="text" id="editPlSpotId">
       <div style="font-size:.68rem;color:var(--text3);margin-top:4px">Ao alterar o ID, o nome é actualizado a partir do Spotify (a menos que tenhas definido um nome manualmente).</div>
+    </div>
+    <div class="fg">
+      <label class="fl">Tags <span style="font-size:.65rem;color:var(--text3)">(separadas por vírgula)</span></label>
+      <input class="fi" type="text" id="editPlTags" placeholder="Ex: rock, acústico, casamento">
+    </div>
+    <div class="fg">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;margin-bottom:10px">
+        <input type="checkbox" id="editPlIsEvent" style="accent-color:var(--accent)">
+        <span>Esta lista é um <strong>evento</strong></span>
+      </label>
+      <div id="editPlEventFields" style="display:none;flex-direction:column;gap:10px">
+        <input class="fi" type="text" id="editPlEventName" placeholder="Nome do evento">
+        <input class="fi" type="text" id="editPlEventLocal" placeholder="Local">
+        <input class="fi" type="date" id="editPlEventDate">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('editPlModal')">Cancelar</button>
@@ -2924,12 +3012,20 @@ function extractSpotId(raw){
 $('#addPlBtn').on('click',function(){
   guardedAction(function(){
     $('#plName').val(''); $('#plSpotRaw').val('');
+    $('#plTags').val('');
+    $('#plIsEvent').prop('checked',false);
+    $('#plEventFields').hide();
+    $('#plEventName,#plEventLocal,#plEventDate').val('');
     $('#plLookupStatus').text('').attr('class','ls');
     $('#plAddError').hide();
     _lookupOk=false; _lookupId=null;
     openModal('addPlModal');
     setTimeout(function(){ $('#plName').focus(); },80);
   });
+});
+
+$('#plIsEvent').on('change',function(){
+  $('#plEventFields').toggle(this.checked).css('display', this.checked ? 'flex' : 'none');
 });
 
 $('#plSpotRaw').on('input',function(){
@@ -2969,10 +3065,16 @@ function doCreatePl(){
     var raw=$('#plSpotRaw').val().trim();
     if(raw){ spotId=extractSpotId(raw)||''; }
   }
+  var tags=$('#plTags').val().trim();
+  var isEvent=$('#plIsEvent').prop('checked')?'1':'0';
+  var eventName=$('#plEventName').val().trim();
+  var eventLocal=$('#plEventLocal').val().trim();
+  var eventDate=$('#plEventDate').val().trim();
   $('#plAddError').hide();
   var btn=$('#plAddBtn');
   btn.prop('disabled',true).text('A criar…');
-  $.post('?pl='+PL_ID,{_action:'add_pl',name:name,spotify_id:spotId,pl:PL_ID},function(r){
+  $.post('?pl='+PL_ID,{_action:'add_pl',name:name,spotify_id:spotId,pl:PL_ID,
+    tags:tags,is_event:isEvent,event_name:eventName,event_local:eventLocal,event_date:eventDate},function(r){
     btn.prop('disabled',false).text('Criar Lista');
     if(r.ok){ window.location.href='?pl='+encodeURIComponent(r.id); }
     else { $('#plAddError').text(r.error||'Erro').show(); }
@@ -2981,21 +3083,45 @@ function doCreatePl(){
 $('#plAddBtn').on('click', doCreatePl);
 
 // ── Edit playlist ──────────────────────────────────────────────
+var _editPlMeta = {};
 function openEditPlModal(id,spotId,name){
   guardedAction(function(){
     _editPlId=id;
+    // Find pl meta from ALL_PLS_META
+    var meta = ALL_PLS_META[id] || {};
     $('#editPlSub').text('A editar: '+name);
     $('#editPlName').val(name);
     $('#editPlSpotId').val(spotId);
+    // Tags
+    var tagsStr = (meta.tags||[]).join(', ');
+    $('#editPlTags').val(tagsStr);
+    // Event
+    var isEv = !!meta.is_event;
+    $('#editPlIsEvent').prop('checked', isEv);
+    $('#editPlEventFields').css('display', isEv ? 'flex' : 'none');
+    $('#editPlEventName').val(meta.event_name||'');
+    $('#editPlEventLocal').val(meta.event_local||'');
+    $('#editPlEventDate').val(meta.event_date||'');
     openModal('editPlModal');
     setTimeout(function(){ $('#editPlName').focus(); },80);
   });
 }
+
+$('#editPlIsEvent').on('change',function(){
+  $('#editPlEventFields').css('display', this.checked ? 'flex' : 'none');
+});
+
 $('#editPlSaveBtn').on('click',function(){
   var newSpotId=$('#editPlSpotId').val().trim();
   var newName=$('#editPlName').val().trim();
+  var tags=$('#editPlTags').val().trim();
+  var isEvent=$('#editPlIsEvent').prop('checked')?'1':'0';
+  var eventName=$('#editPlEventName').val().trim();
+  var eventLocal=$('#editPlEventLocal').val().trim();
+  var eventDate=$('#editPlEventDate').val().trim();
   $(this).prop('disabled',true).text('…');
-  $.post('?pl='+PL_ID,{_action:'edit_pl',target_id:_editPlId,spotify_id:newSpotId,name:newName,pl:PL_ID},function(r){
+  $.post('?pl='+PL_ID,{_action:'edit_pl',target_id:_editPlId,spotify_id:newSpotId,name:newName,pl:PL_ID,
+    tags:tags,is_event:isEvent,event_name:eventName,event_local:eventLocal,event_date:eventDate},function(r){
     $('#editPlSaveBtn').prop('disabled',false).text('Salvar');
     if(r.ok){ closeModal('editPlModal'); window.location.reload(); }
   },'json');
@@ -3084,6 +3210,16 @@ function doPrint() {
 
 var HAS_SPOT_USER = <?= $hasSpotUser?'true':'false' ?>;
 var ALL_PLS = <?= json_encode(array_map(function($p){ return ['id'=>$p['id'],'name'=>$p['name']]; }, $playlists), JSON_UNESCAPED_UNICODE) ?>;
+var ALL_PLS_META = <?= json_encode(array_reduce($playlists, function($carry,$p){
+    $carry[$p['id']] = [
+        'tags'        => $p['tags'] ?? [],
+        'is_event'    => !empty($p['is_event']),
+        'event_name'  => $p['event_name'] ?? '',
+        'event_local' => $p['event_local'] ?? '',
+        'event_date'  => $p['event_date'] ?? '',
+    ];
+    return $carry;
+}, []), JSON_UNESCAPED_UNICODE) ?>;
 
 // ── CSS for sync diff rows ─────────────────────────────────────
 (function(){
