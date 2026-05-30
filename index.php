@@ -1427,7 +1427,8 @@ $spotOAuthLink = ($hasSpot && !$hasSpotUser) ? spotOAuthUrl() : null;
   --text:#f0f0f4;--text2:#8888a0;--text3:#555568;
   --danger:#e05252;--danger-dim:rgba(224,82,82,.12);
   --r:8px;--r2:14px;--tr:.18s cubic-bezier(.4,0,.2,1);
-  --sw:230px;
+  --sw:0px;
+  --sw-open:max-content;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
@@ -1435,11 +1436,18 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
 /* ── SIDEBAR ── */
 .sidebar{
-  position:fixed;left:0;top:0;bottom:0;width:var(--sw);
+  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:400px;
   background:var(--bg2);border-right:1px solid var(--border);
   display:flex;flex-direction:column;z-index:100;overflow-y:auto;
   transition:transform var(--tr);
+  transform:translateX(-100%);
 }
+.sidebar.open{
+  transform:translateX(0);
+  box-shadow:4px 0 32px rgba(0,0,0,.6);
+}
+.sb-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99}
+.sb-backdrop.open{display:block}
 .sb-logo{padding:22px 20px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sb-logo .wm{font-family:'Playfair Display',serif;font-size:1.2rem;font-weight:900;letter-spacing:-.02em}
 .sb-logo .wm span{color:var(--accent)}
@@ -1492,7 +1500,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .sb-auth svg{width:10px;height:10px;flex-shrink:0}
 
 /* ── MAIN ── */
-.main{margin-left:var(--sw);min-height:100vh;display:flex;flex-direction:column}
+.main{margin-left:0;min-height:100vh;display:flex;flex-direction:column}
 
 .topbar{
   border-bottom:1px solid var(--border);padding:13px 26px;
@@ -1624,9 +1632,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .cp-toast.show{transform:translateY(0);opacity:1}
 
 /* hamburger */
-.hamburger{display:none;background:none;border:none;color:var(--text);cursor:pointer;padding:5px;border-radius:var(--r)}
+.hamburger{background:none;border:none;color:var(--text);cursor:pointer;padding:5px;border-radius:var(--r);display:flex}
 .hamburger svg{width:20px;height:20px;display:block}
-.sb-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99}
 
 /* scrollbar */
 ::-webkit-scrollbar{width:5px}
@@ -1651,12 +1658,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 .tb-overflow-menu .btn{justify-content:flex-start;width:100%;font-size:.78rem;padding:7px 10px}
 
 @media(max-width:700px){
-  :root{--sw:0px}
-  .sidebar{transform:translateX(-230px);width:230px;box-shadow:4px 0 24px rgba(0,0,0,.5)}
-  .sidebar.open{transform:translateX(0)}
-  .sb-backdrop.open{display:block}
-  .hamburger{display:flex}
-  .main{margin-left:0}
+  .sidebar{min-width:230px}
   .topbar{padding:10px 13px;position:relative}
   .tb-title{font-size:.95rem}
   .tb-sub{display:none}
@@ -1707,17 +1709,25 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .td-cifra{display:none!important}
   thead th.th-cifra-print{display:none!important}
 
-  @page{margin:1.4cm 1.6cm;size:A4 portrait}
-  body{font-family:'DM Sans',sans-serif!important}
+  @page{margin:1cm 1.4cm;size:A4 portrait}
+  body{font-family:'DM Sans',sans-serif!important;margin:0!important;padding:0!important}
+  html,body{height:auto!important;overflow:visible!important}
   .main{margin-left:0!important}
   .content{padding:0!important}
 
+  /* Single page forced scaling — JS sets --print-scale on body */
+  .print-scale-wrap{
+    transform-origin: top left;
+    transform: scale(var(--print-scale, 1));
+    width: calc(100% / var(--print-scale, 1));
+  }
+
   /* Print header */
-  .print-header{display:block!important;margin-bottom:18px}
+  .print-header{display:block!important;margin-bottom:14px}
   .print-event-info{display:flex!important;gap:16px;flex-wrap:wrap;font-family:'DM Mono',monospace;font-size:.62rem;color:#555!important;margin:5px 0 10px;letter-spacing:.04em}
 
   /* Stat cards — only 2: Temas + Duração */
-  .print-stats{display:flex!important;gap:10px;margin-bottom:18px;max-width:340px}
+  .print-stats{display:flex!important;gap:10px;margin-bottom:14px;max-width:340px}
   .print-stat-card{
     flex:1;border:1.5px solid #ccc!important;border-radius:10px;
     padding:10px 14px 8px;text-align:left
@@ -1736,8 +1746,8 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
     width:36px;text-align:right;padding-right:14px;
     font-family:'DM Mono',monospace;font-size:.75rem;color:#aaa!important
   }
-  tbody td.td-title{font-size:.85rem;font-weight:500;padding:6px 10px}
-  tbody td.td-artist{font-size:.78rem;color:#555!important;padding:6px 10px}
+  tbody td.td-title{font-size:.85rem;font-weight:500;padding:5px 10px}
+  tbody td.td-artist{font-size:.78rem;color:#555!important;padding:5px 10px}
   .td-dur-print{display:table-cell!important}
   .th-dur-print{display:table-cell!important}
   tbody td.td-dur-print{font-family:'DM Mono',monospace;font-size:.72rem;color:#999!important;text-align:right;padding-right:4px;white-space:nowrap}
@@ -1745,15 +1755,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   tbody tr{border-bottom:1px solid #eee!important}
   tbody tr:last-child td{border-bottom:none!important}
 
-  body.print-1page thead th{padding:3px 8px;font-size:.48rem}
-  body.print-1page tbody td{font-size:.78rem;padding:3px 8px}
-  body.print-1page .print-header h2{font-size:14pt}
-  body.print-1page .print-stat-num{font-size:1.15rem}
-
-  body.print-2page thead th{padding:5px 10px;font-size:.55rem}
-  body.print-2page tbody td.td-title{font-size:.9rem;padding:7px 10px}
-  body.print-2page tbody td.td-artist{font-size:.82rem;padding:7px 10px}
-  body.print-2page .print-header h2{font-size:17pt}
+  /* Prevent page breaks */
+  table{page-break-inside:auto}
+  tr{page-break-inside:avoid}
 }
 
 /* print header (hidden on screen) */
@@ -2014,6 +2018,7 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   </div>
 
   <div class="content fade-up">
+    <div class="print-scale-wrap" id="printScaleWrap">
     <!-- Print-only header (hidden on screen) -->
     <div class="print-header" id="printHeader">
       <h2><?= htmlspecialchars($activePl['name']??'SetList') ?></h2>
@@ -2062,6 +2067,15 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
       <a href="?pl=<?= urlencode($plId) ?>&sort=title&order=<?= ($sortCol==='title'&&$sortOrd==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Título</a>
       <a href="?pl=<?= urlencode($plId) ?>&sort=artist&order=<?= ($sortCol==='artist'&&$sortOrd==='asc')?'desc':'asc' ?>" class="btn btn-outline">A→Z Artista</a>
     </div>
+
+    <!-- "Em que listas está?" search -->
+    <div class="search-row" style="margin-bottom:18px">
+      <div class="search-wrap">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <input type="text" class="search-input" id="findInListsInput" placeholder="Em que listas está esta música?">
+      </div>
+    </div>
+    <div id="findInListsResults" style="display:none;position:fixed;z-index:400;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);padding:10px 14px;box-shadow:0 8px 32px rgba(0,0,0,.55);font-size:.8rem;max-height:60vh;overflow-y:auto"></div>
 
     <div class="table-wrap">
       <table>
@@ -2142,9 +2156,10 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
           <?php endforeach; ?>
         </tbody>
       </table>
-    </div>
-  </div>
-</div>
+    </div><!-- /.table-wrap -->
+    </div><!-- /.print-scale-wrap -->
+  </div><!-- /.content -->
+</div><!-- /.main -->
 
 <?php // ── MODALS ────────────────────────────────────────────────
 ?>
@@ -2234,21 +2249,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 <!-- Print modal -->
 <div class="modal-overlay" id="printModal">
-  <div class="modal" style="max-width:340px">
+  <div class="modal" style="max-width:300px">
     <div class="modal-title">Imprimir Lista</div>
-    <div class="modal-sub">Escolhe quantas páginas queres usar.</div>
-    <div class="print-opt">
-      <button class="print-opt-btn selected" id="printOpt1" onclick="selectPrintOpt(1)">
-        <span class="pob-icon">📄</span>
-        <span class="pob-label">1 Página</span>
-        <span class="pob-sub">Fonte reduzida,<br>tudo numa folha</span>
-      </button>
-      <button class="print-opt-btn" id="printOpt2" onclick="selectPrintOpt(2)">
-        <span class="pob-icon">📄📄</span>
-        <span class="pob-label">2 Páginas</span>
-        <span class="pob-sub">Fonte normal,<br>mais espaçado</span>
-      </button>
-    </div>
+    <div class="modal-sub">A lista será ajustada automaticamente para caber numa única página.</div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('printModal')">Cancelar</button>
       <button class="btn btn-primary" onclick="doPrint()">
@@ -2722,7 +2725,7 @@ $('#lockPwd').on('keydown',function(e){
 // Close any modal on backdrop click
 $(document).on('click','.modal-overlay',function(e){ if(e.target===this) $(this).removeClass('open'); });
 
-// ── Mobile sidebar ─────────────────────────────────────────────
+// ── Sidebar toggle (desktop + mobile) ─────────────────────────
 $('#menuBtn').on('click',function(){ $('#sidebar').toggleClass('open'); $('#backdrop').toggleClass('open'); });
 $('#backdrop').on('click',function(){ $('#sidebar,#backdrop').removeClass('open'); });
 
@@ -3176,35 +3179,42 @@ $('#copyListBtn').on('click',function(){
 });
 
 // ── Print ──────────────────────────────────────────────────────
-var _printPages = 1;
-
 function openPrintModal() {
-  _printPages = 1;
-  $('#printOpt1').addClass('selected');
-  $('#printOpt2').removeClass('selected');
   openModal('printModal');
 }
-function selectPrintOpt(n) {
-  _printPages = n;
-  $('#printOpt1').toggleClass('selected', n===1);
-  $('#printOpt2').toggleClass('selected', n===2);
-}
+
 function doPrint() {
   // Set date in print header
   var date = new Date().toLocaleDateString('pt-PT',{day:'2-digit',month:'long',year:'numeric'});
   $('#printDateSpan').text(date);
   // Show print-only stat cards and duration column
   $('#printStatsRow').show();
-  // Apply body class for page sizing
-  $('body').removeClass('print-1page print-2page').addClass('print-'+_printPages+'page');
   closeModal('printModal');
+
+  // A4 portrait printable height in px at 96dpi (after @page 1cm top/bottom margins)
+  // 297mm - 20mm margins = 277mm ≈ 1048px at 96dpi
+  var A4_H_PX = 277 * 96 / 25.4;
+  // A4 printable width: 210mm - 28mm margins = 182mm ≈ 688px
+  var A4_W_PX = 182 * 96 / 25.4;
+
+  // Let browser render, then measure and scale
   setTimeout(function(){
-    window.print();
-    // Clean up after print dialog closes
+    var wrap = document.getElementById('printScaleWrap');
+    var naturalH = wrap.scrollHeight;
+    var naturalW = wrap.scrollWidth;
+    var scaleH = A4_H_PX / naturalH;
+    var scaleW = A4_W_PX / naturalW;
+    var scale = Math.min(scaleH, scaleW, 1); // never upscale beyond 1
+    scale = Math.max(scale, 0.2); // floor at 0.2 (very long lists still readable)
+    document.body.style.setProperty('--print-scale', scale);
+
     setTimeout(function(){
-      $('body').removeClass('print-1page print-2page');
-      $('#printStatsRow').hide();
-    }, 500);
+      window.print();
+      setTimeout(function(){
+        document.body.style.removeProperty('--print-scale');
+        $('#printStatsRow').hide();
+      }, 600);
+    }, 150);
   }, 200);
 }
 
@@ -3909,6 +3919,116 @@ $('#cmpRunBtn').on('click', function(){
     $('#cmpError').text('Erro de rede.').show();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// FIND SONG IN ALL LISTS
+// ═══════════════════════════════════════════════════════════════
+(function(){
+  var _cache = {};   // pl_id → songs array
+  var _timer = null;
+
+  function norm(s){
+    return (s||'').toLowerCase()
+      .replace(/[áàãâä]/g,'a').replace(/[éêëè]/g,'e').replace(/[íîïì]/g,'i')
+      .replace(/[óôõöò]/g,'o').replace(/[úûüù]/g,'u').replace(/ç/g,'c').replace(/ñ/g,'n')
+      .replace(/[^a-z0-9]/g,'');
+  }
+
+  function fetchPl(pl, done){
+    if(_cache[pl.id]){ done(_cache[pl.id]); return; }
+    $.post('?pl='+PL_ID, {_action:'get_songs_for_compare', pl_id: pl.id}, function(r){
+      if(r.ok){ _cache[pl.id] = r.songs; done(r.songs); }
+      else done([]);
+    }, 'json').fail(function(){ done([]); });
+  }
+
+  function showResults(q){
+    var res = $('#findInListsResults');
+    if(!q){ res.hide(); return; }
+    var qn = norm(q);
+    var pending = ALL_PLS.length;
+    var found = [];
+
+    ALL_PLS.forEach(function(pl){
+      fetchPl(pl, function(songs){
+        songs.forEach(function(s){
+          var tn = norm(s.title), an = norm(s.artist);
+          if(tn.includes(qn) || an.includes(qn)){
+            found.push({plId: pl.id, plName: pl.name, title: s.title, artist: s.artist});
+          }
+        });
+        pending--;
+        if(pending === 0) render(found);
+      });
+    });
+  }
+
+  function render(found){
+    var res = $('#findInListsResults');
+    if(!found.length){
+      res.html('<div style="color:var(--text3);padding:4px 0">Nenhuma lista contém esta música.</div>').show();
+      return;
+    }
+    var byPl = {};
+    found.forEach(function(f){
+      if(!byPl[f.plId]) byPl[f.plId] = {name: f.plName, songs: []};
+      byPl[f.plId].songs.push(f);
+    });
+    var plCount = Object.keys(byPl).length;
+    var html = '<div style="font-size:.65rem;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">'
+      + 'Encontrada em ' + plCount + ' lista' + (plCount===1?'':'s') + '</div>';
+    Object.keys(byPl).forEach(function(plId){
+      var pl = byPl[plId];
+      var isCurrent = plId === PL_ID;
+      html += '<div style="margin-bottom:10px">'
+        + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+        + '<span style="width:6px;height:6px;border-radius:50%;background:'+(isCurrent?'var(--accent)':'var(--text3)')+';flex-shrink:0;display:inline-block"></span>'
+        + '<a href="?pl='+escH(plId)+'" style="font-weight:600;color:'+(isCurrent?'var(--accent)':'var(--text)')+';text-decoration:none;font-size:.8rem">'+escH(pl.name)+'</a>'
+        + (isCurrent ? '<span style="font-size:.58rem;color:var(--accent);background:var(--accent-dim);padding:1px 5px;border-radius:3px;border:1px solid var(--accent-glow)">atual</span>' : '')
+        + '</div>';
+      pl.songs.forEach(function(s){
+        html += '<div style="padding:2px 0 2px 14px;font-size:.76rem;color:var(--text2)">'
+          + '<span style="color:var(--text)">' + escH(s.title) + '</span>'
+          + (s.artist ? '<span style="color:var(--text3)"> — ' + escH(s.artist) + '</span>' : '')
+          + '</div>';
+      });
+      html += '</div>';
+    });
+    html += '<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;font-size:.65rem;color:var(--text3)">Clica no nome da lista para navegar</div>';
+    res.html(html).show();
+  }
+
+  function positionResults(){
+    var inp = $('#findInListsInput');
+    var off = inp.offset();
+    $('#findInListsResults').css({
+      position: 'fixed',
+      top: (off.top - $(window).scrollTop()) + inp.outerHeight() + 4,
+      left: off.left,
+      width: Math.max(inp.outerWidth(), 320)
+    });
+  }
+
+  $('#findInListsInput').on('input', function(){
+    var q = $(this).val().trim();
+    clearTimeout(_timer);
+    if(!q){ $('#findInListsResults').hide(); return; }
+    positionResults();
+    _timer = setTimeout(function(){ showResults(q); }, 300);
+  });
+
+  $('#findInListsInput').on('focus', function(){
+    if($(this).val().trim()) { positionResults(); $('#findInListsResults').show(); }
+  });
+
+  $(document).on('click', function(e){
+    if(!$(e.target).closest('#findInListsInput, #findInListsResults').length){
+      $('#findInListsResults').hide();
+    }
+  });
+
+  $(window).on('resize scroll', positionResults);
+})();
 
 </script>
 
