@@ -1457,7 +1457,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
 /* ── SIDEBAR ── */
 .sidebar{
-  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:230px;
+  position:fixed;left:0;top:0;bottom:0;width:max-content;min-width:400px;
   background:var(--bg2);border-right:1px solid var(--border);
   display:flex;flex-direction:column;z-index:100;overflow-y:auto;
   transition:transform var(--tr);
