@@ -570,6 +570,32 @@ if (isset($_GET['spot_logout'])) {
 
 
 // Login
+// Handle GET export actions before any HTML output
+$_getAct = $_GET['_action'] ?? '';
+if($_getAct==='export_pl' || $_getAct==='export_all'){
+    if(!isAuthed()) { http_response_code(403); echo 'Not authorised'; exit; }
+    if($_getAct==='export_pl'){
+        $pl = getActivePl();
+        $songs = loadSongs($pl);
+        $export = ['version'=>1,'playlist'=>$pl,'songs'=>$songs,'exported_at'=>date('c')];
+        $fname = preg_replace('/[^a-z0-9_\-]/i','_',$pl['name']??'lista').'.setlist.json';
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="'.$fname.'"');
+        echo json_encode($export, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
+        exit;
+    }
+    if($_getAct==='export_all'){
+        $pls = loadPlaylists();
+        $all = [];
+        foreach($pls as $p) $all[] = ['playlist'=>$p,'songs'=>loadSongs($p)];
+        $export = ['version'=>1,'all_playlists'=>$all,'exported_at'=>date('c')];
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="setlist_backup_'.date('Y-m-d').'.json"');
+        echo json_encode($export, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+
 if(($_POST['_action']??'')==='_login'){
     if($_POST['password']===adminPwd()){$_SESSION['sl_authed']=true;jsonOut(['ok'=>true]);}
     jsonOut(['ok'=>false,'error'=>'Senha incorreta.']);
@@ -632,9 +658,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if($i>=0&&$i<count($songs)&&$title&&$artist){
             $songs[$i]['title']=$title;$songs[$i]['artist']=$artist;
             $songs[$i]['cifra_url']=$cu?:'N/A';$songs[$i]['cifra_source']=$cs;
+            $su2=trim($_POST['spotify_url']??'');
+            if($su2) $songs[$i]['spotify_url']=$su2;
             saveSongs($pl,$songs);
             jsonOut(['ok'=>true,'title'=>$title,'artist'=>$artist,
-                     'cifra_url'=>cifraUrl($songs[$i]),'cifra_label'=>cifraLabel($songs[$i]),'cifra_source'=>$cs]);
+                     'cifra_url'=>cifraUrl($songs[$i]),'cifra_label'=>cifraLabel($songs[$i]),'cifra_source'=>$cs,
+                     'spotify_url'=>$songs[$i]['spotify_url']??'']);
         }
         jsonOut(['ok'=>false]);
     }
@@ -1408,10 +1437,10 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         // Create playlist via /v1/me/playlists (no user ID needed)
         $ch=curl_init('https://api.spotify.com/v1/me/playlists');
         curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $tok","Content-Type: application/json"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['name'=>$plName,'description'=>$desc,'public'=>false]),CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_SSL_VERIFYHOST=>false,CURLOPT_TIMEOUT=>15]);
-        $raw=curl_exec($ch); $curlErr=curl_error($ch); $httpCode=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
-        $r=json_decode($raw,true);
+        $raw2=curl_exec($ch); $curlErr=curl_error($ch); $httpCode=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
+        $r=json_decode($raw2,true);
         if(empty($r['id'])){
-            $detail = $r['error']['message'] ?? ($r['error_description'] ?? ($curlErr ?: ('HTTP '.$httpCode.' raw:'.substr($raw??'',0,200))));
+            $detail = $r['error']['message'] ?? ($r['error_description'] ?? ($curlErr ?: ('HTTP '.$httpCode.' raw:'.substr($raw2??'',0,200))));
             jsonOut(['ok'=>false,'error'=>'Falha ao criar playlist: '.$detail]);
         }
         $newSpotId = $r['id'];
@@ -1440,6 +1469,69 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'spotify_id'=>$newSpotId,'spotify_url'=>$spotUrl,'tracks_added'=>count($uris),'tracks_total'=>count($songs)]);
     }
 }
+
+    // -- Export: backup single playlist --
+    if($act==='export_pl'){
+        needAuth();
+        $pl = getActivePl();
+        $songs = loadSongs($pl);
+        $export = ['version'=>1,'playlist'=>$pl,'songs'=>$songs,'exported_at'=>date('c')];
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="'.preg_replace('/[^a-z0-9_\-]/i','_',$pl['name']??'lista').'.setlist.json"');
+        echo json_encode($export, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    // -- Export: backup ALL playlists --
+    if($act==='export_all'){
+        needAuth();
+        $pls = loadPlaylists();
+        $all = [];
+        foreach($pls as $p) $all[] = ['playlist'=>$p,'songs'=>loadSongs($p)];
+        $export = ['version'=>1,'all_playlists'=>$all,'exported_at'=>date('c')];
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="setlist_backup_'.date('Y-m-d').'.json"');
+        echo json_encode($export, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    // -- Import: restore from .setlist.json --
+    if($act==='import_backup'){
+        needAuth();
+        $raw = $_POST['backup_data'] ?? file_get_contents('php://input');
+        $data = json_decode($raw, true);
+        if(empty($data['version'])) jsonOut(['ok'=>false,'error'=>'Ficheiro inválido.']);
+        $playlists = loadPlaylists();
+        $items = isset($data['all_playlists']) ? $data['all_playlists'] : [['playlist'=>$data['playlist'],'songs'=>$data['songs']??[]]];
+        $imported = 0;
+        foreach($items as $item){
+            $pl = $item['playlist'] ?? null;
+            $songs = $item['songs'] ?? [];
+            if(!$pl || empty($pl['name'])) continue;
+            $pl['id'] = newPlId(); usleep(1001);
+            $playlists[] = $pl;
+            saveSongs($pl, $songs);
+            $imported++;
+        }
+        savePlaylists($playlists);
+        jsonOut(['ok'=>true,'imported'=>$imported]);
+    }
+
+    // -- Find duplicates --
+    if($act==='find_duplicates'){
+        needAuth();
+        $pl = getActivePl();
+        $songs = loadSongs($pl);
+        $seen = []; $dupes = [];
+        foreach($songs as $i=>$s){
+            $key = mb_strtolower(trim($s['title']??'')).'|||'.mb_strtolower(trim($s['artist']??''));
+            if(isset($seen[$key])){ $dupes[$seen[$key]]=$songs[$seen[$key]]; $dupes[$i]=$s; }
+            else $seen[$key]=$i;
+        }
+        $result=[];
+        foreach($dupes as $i=>$s) $result[]=array_merge($s,['index'=>(int)$i]);
+        jsonOut(['ok'=>true,'duplicates'=>$result,'count'=>count($result)]);
+    }
 
 $activePl  = getActivePl();
 $playlists = loadPlaylists();
@@ -1624,9 +1716,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .search-input::placeholder{color:var(--text3)}
 
 /* ── TABLE ── */
-.table-wrap{border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;background:var(--bg2)}
+.table-wrap{border:1px solid var(--border);border-radius:var(--r2);overflow:visible;background:var(--bg2)}
 table{width:100%;border-collapse:collapse}
-thead th{font-family:'DM Mono',monospace;font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);padding:9px 13px;border-bottom:1px solid var(--border);text-align:left;background:var(--bg2);font-weight:400}
+thead th{font-family:'DM Mono',monospace;font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);padding:9px 13px;border-bottom:1px solid var(--border);text-align:left;background:var(--bg2);font-weight:400;position:sticky;top:var(--topbar-h,56px);z-index:10}
 tbody tr{border-bottom:1px solid var(--border);transition:background var(--tr)}
 tbody tr:last-child{border-bottom:none}
 tbody tr:hover{background:var(--bg3)}
@@ -1763,7 +1855,9 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
   .topbar #syncBtn,
   .topbar #printBtn,
   .topbar #copyListBtn,
-  .topbar #compareBtn{display:none}
+  .topbar #compareBtn,
+  .topbar #backupBtn,
+  .topbar #dupBtn{display:none}
   .topbar .btn-primary .btn-lbl{display:none}
   .tb-more-btn{display:inline-flex}
   /* Modal full-screen on mobile */
@@ -1846,9 +1940,21 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 /* print header (hidden on screen) */
 .print-header{display:none}
-.th-dur{font-size:.65rem;text-align:right;padding-right:6px;color:var(--text3);white-space:nowrap}
-.td-dur{font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text3);text-align:right;padding-right:6px;white-space:nowrap}
-.td-dur-empty{opacity:.25}
+.table-wrap{position:relative}
+thead th{background:var(--bg2)!important;box-shadow:0 1px 0 var(--border)}
+.sticky-panel{position:sticky;top:0;z-index:20;background:var(--bg);padding-bottom:4px}
+.td-spot-id{width:72px;font-family:'DM Mono',monospace;font-size:.62rem;white-space:nowrap}
+.th-spot-id{font-size:.56rem;white-space:nowrap}
+.spot-id-link{color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--border2)}
+.spot-id-link:hover{color:var(--accent);border-color:var(--accent)}
+.spot-id-empty{color:var(--border2)}
+.song-row.is-dup{background:rgba(255,160,50,.07)}
+.song-row.is-dup td{color:var(--text)}
+.dup-badge{display:inline-block;background:#f0a050;color:#fff;border-radius:3px;font-size:.55rem;padding:1px 4px;margin-left:5px;vertical-align:middle;font-weight:700;letter-spacing:.04em}
+#backupModal .modal{max-width:360px}
+.backup-section{margin-bottom:16px}
+.backup-section h4{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin:0 0 8px}
+.backup-btn-row{display:flex;gap:8px;flex-wrap:wrap}
 .print-header h2{font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;margin:0 0 3px 0;color:#111;letter-spacing:-.01em}
 .print-header p{font-family:'DM Mono',monospace;font-size:.6rem;color:#888;margin:0 0 10px 0;letter-spacing:.07em;text-transform:uppercase}
 .print-event-info{display:flex;gap:14px;flex-wrap:wrap;font-family:'DM Mono',monospace;font-size:.65rem;color:#555;margin:4px 0 8px;letter-spacing:.04em}
@@ -2104,6 +2210,14 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         <span class="btn-lbl">Importar</span>
       </button>
+      <button class="btn btn-outline" id="backupBtn" title="Exportar / Importar backup">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span class="btn-lbl">Backup</span>
+      </button>
+      <button class="btn btn-outline" id="dupBtn" title="Encontrar duplicados">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><line x1="14" y1="14" x2="18" y2="14"/><line x1="16" y1="12" x2="16" y2="16"/></svg>
+        <span class="btn-lbl">Duplic.</span>
+      </button>
       <button class="btn btn-outline" id="mergePlBtn" title="Merge de listas">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
         <span class="btn-lbl">Merge</span>
@@ -2137,6 +2251,14 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
         <button class="btn btn-outline" id="importTextBtnM">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Importar Texto
+        </button>
+        <button class="btn btn-outline" id="backupBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Backup / Restaurar
+        </button>
+        <button class="btn btn-outline" id="dupBtnM">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><line x1="14" y1="14" x2="18" y2="14"/><line x1="16" y1="12" x2="16" y2="16"/></svg>
+          Duplicados
         </button>
         <button class="btn btn-outline" id="mergePlBtnM">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3"/><polyline points="15 3 12 0 9 3"/><line x1="12" y1="0" x2="12" y2="15"/></svg>
@@ -2242,7 +2364,8 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             <th>Artista</th>
             <th class="td-cifra th-cifra-print">Cifra</th>
             <th class="td-spot"></th>
-            <th class="th-dur">Dur.</th>
+            <th class="td-spot-id th-spot-id" title="ID Spotify">Spot.</th>
+            <th class="th-dur-print" style="display:none">Duração</th>
             <th class="td-actions">Ações</th>
           </tr>
         </thead>
@@ -2293,9 +2416,19 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
                 </a>
               <?php endif; ?>
             </td>
-            <td class="td-dur<?= empty($song['duration_ms']) ? ' td-dur-empty' : '' ?>">
-              <?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '' ?>
+            <td class="td-spot-id">
+              <?php
+                $spotUri = $song['spotify_uri'] ?? '';
+                $spotId  = $spotUri ? preg_replace('/^spotify:track:/','',$spotUri) : '';
+                if(!$spotId && $su) { preg_match('/\/track\/([A-Za-z0-9]+)/',$su,$m); $spotId=$m[1]??'';}  
+                if($spotId):
+              ?>
+                <a href="<?= htmlspecialchars($su) ?>" target="_blank" class="spot-id-link" title="<?= htmlspecialchars($su) ?>"><?= htmlspecialchars(substr($spotId,0,8)) ?>…</a>
+              <?php else: ?>
+                <span class="spot-id-empty">—</span>
+              <?php endif; ?>
             </td>
+            <td class="td-dur-print" style="display:none"><?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '' ?></td>
             <td class="td-actions">
               <div class="aw">
                 <button class="btn btn-ghost edit-btn" data-i="<?= $i ?>" title="Editar">
@@ -2394,10 +2527,62 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
       <input class="fi" type="text" id="smCifraUrl" placeholder="skank/resposta ou URL completa">
       <div style="font-size:.68rem;color:var(--text3);margin-top:4px" id="smCifraHint"></div>
     </div>
+    <div class="fg" id="smSpotFg">
+      <label class="fl">URL / ID Spotify <span style="font-size:.65rem;color:var(--text3);font-weight:400">(opcional)</span></label>
+      <input class="fi" type="text" id="smSpotUrl" placeholder="https://open.spotify.com/track/… ou ID direto">
+      <div style="font-size:.68rem;color:var(--text3);margin-top:4px" id="smSpotHint"></div>
+    </div>
     <div id="smError" class="alert alert-err" style="display:none"></div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal('songModal')">Cancelar</button>
       <button class="btn btn-primary" id="smSaveBtn">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Backup/Restore modal -->
+<div class="modal-overlay" id="backupModal">
+  <div class="modal" style="max-width:360px">
+    <div class="modal-title">Backup &amp; Restaurar</div>
+    <div class="modal-sub">Exporta ou importa listas em formato JSON.</div>
+    <div style="padding:16px 26px">
+      <div class="backup-section">
+        <h4>Exportar</h4>
+        <div class="backup-btn-row">
+          <button class="btn btn-outline" onclick="doExportPl()" style="flex:1">
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Esta lista
+          </button>
+          <button class="btn btn-outline" onclick="doExportAll()" style="flex:1">
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Todas as listas
+          </button>
+        </div>
+      </div>
+      <div class="backup-section">
+        <h4>Importar / Restaurar</h4>
+        <p style="font-size:.75rem;color:var(--text3);margin-bottom:10px">Seleciona um ficheiro <code>.setlist.json</code> exportado anteriormente. Serão criadas novas listas sem apagar as existentes.</p>
+        <input type="file" id="backupFileInput" accept=".json,.setlist.json" style="display:none" onchange="doImportBackup(this)">
+        <button class="btn btn-outline" style="width:100%" onclick="document.getElementById('backupFileInput').click()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Escolher ficheiro…
+        </button>
+        <div id="backupImportStatus" style="margin-top:8px;font-size:.75rem;color:var(--text3)"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('backupModal')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Duplicates modal -->
+<div class="modal-overlay" id="dupModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">Temas Duplicados</div>
+    <div id="dupModalBody" style="padding:10px 26px 4px;max-height:55vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('dupModal')">Fechar</button>
     </div>
   </div>
 </div>
@@ -3002,7 +3187,8 @@ function openSongModal(mode, idx) {
   if(mode==='add'){
     $('#songModalTitle').text('Adicionar Música');
     $('#songModalSub').text('');
-    $('#smTitle,#smArtist,#smCifraUrl').val('');
+    $('#smTitle,#smArtist,#smCifraUrl,#smSpotUrl').val('');
+    $('#smSpotHint').html('');
     $('#smCifraHint').html('');
     setSrc('cifraclub');
     $('#songModalMode').val('add'); $('#songModalIdx').val('');
@@ -3027,6 +3213,13 @@ function openSongModal(mode, idx) {
     }
     $('#songModalMode').val('edit'); $('#songModalIdx').val(idx);
     $('#smSaveBtn').text('Salvar');
+    // Spotify URL field
+    var su = s.spotify_url || '';
+    $('#smSpotUrl').val(su);
+    if(su) {
+      var sid = su.match(/\/track\/([A-Za-z0-9]+)/); sid = sid ? sid[1] : su;
+      $('#smSpotHint').html('ID: <code>'+escH(sid)+'</code> &nbsp;<a href="'+escH(su)+'" target="_blank" style="color:var(--accent)">abrir ↗</a>');
+    } else { $('#smSpotHint').html(''); }
   }
   openModal('songModal');
   setTimeout(function(){ $('#smTitle').focus(); }, 80);
@@ -3104,6 +3297,12 @@ function saveSong(){
   var data={title:title,artist:artist,cifra_url:cu,cifra_source:_curSongSrc};
   if(mode==='edit'){
     data._action='edit_song'; data.index=$('#songModalIdx').val();
+    // Normalise Spotify URL input: accept full URL or bare ID
+    var rawSpot = $('#smSpotUrl').val().trim();
+    if(rawSpot && !rawSpot.startsWith('http')){
+      rawSpot = 'https://open.spotify.com/track/' + rawSpot.replace(/^spotify:track:/,'');
+    }
+    data.spotify_url = rawSpot;
     post(data,function(r){
       $('#smSaveBtn').prop('disabled',false).text('Salvar');
       if(!r.ok){ $('#smError').text('Erro ao salvar.').show(); return; }
@@ -3385,10 +3584,6 @@ function doPrint() {
 
   var rowCount = songs.length;
   var plName   = <?= json_encode($activePl['name'] ?? 'SetList') ?>;
-  var isEvent  = <?= !empty($activePl['is_event']) ? 'true' : 'false' ?>;
-  var eventName  = <?= json_encode($activePl['event_name']  ?? '', JSON_UNESCAPED_UNICODE) ?>;
-  var eventLocal = <?= json_encode($activePl['event_local'] ?? '', JSON_UNESCAPED_UNICODE) ?>;
-  var eventDate  = <?= json_encode($activePl['event_date']  ?? '', JSON_UNESCAPED_UNICODE) ?>;
 
   // Total duration from SONGS
   function parseDur(d){ if(!d)return 0; var p=String(d).split(':'); return p.length===2?parseInt(p[0])*60+parseInt(p[1]):0; }
@@ -3428,8 +3623,6 @@ function doPrint() {
     '.stat{border:1pt solid #ccc;border-radius:6pt;padding:6pt 10pt}' +
     '.stat-n{font-size:16pt;font-weight:700;line-height:1;display:block}' +
     '.stat-l{font-size:6pt;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-top:2pt;display:block}' +
-    '.event-info{font-size:7.5pt;color:#444;margin-bottom:5pt;display:flex;gap:12pt;flex-wrap:wrap}' +
-    '.event-info span{display:inline-flex;align-items:center;gap:3pt}' +
     'hr{border:none;border-top:1.5pt solid #111;margin-bottom:8pt}' +
     'table{width:100%;border-collapse:collapse}' +
     'thead th{font-size:6pt;letter-spacing:.12em;text-transform:uppercase;color:#aaa;' +
@@ -3444,11 +3637,6 @@ function doPrint() {
     '</style></head><body>' +
     '<h2>' + esc(plName) + '</h2>' +
     '<div class="sub">' + esc(plName) + '</div>' +
-    (isEvent && (eventName||eventLocal||eventDate) ? '<div class="event-info">' +
-      (eventName  ? '<span>\u{1f3a4} ' + esc(eventName)  + '</span>' : '') +
-      (eventLocal ? '<span>\u{1f4cd} ' + esc(eventLocal) + '</span>' : '') +
-      (eventDate  ? '<span>\u{1f4c5} ' + esc(eventDate)  + '</span>' : '') +
-    '</div>' : '') +
     '<div class="meta">' + date + '</div>' +
     '<div class="stats">' +
       '<div class="stat"><span class="stat-n">' + rowCount + '</span><span class="stat-l">Temas</span></div>' +
@@ -4314,6 +4502,135 @@ $('#cmpRunBtn').on('click', function(){
 })();
 
 // ── PWA: registar service worker ─────────────────────────────────
+
+// ===== BACKUP / EXPORT / IMPORT =====
+function doExportPl(){
+  var url = window.location.pathname + '?pl=' + encodeURIComponent(<?= json_encode($plId) ?>) + '&_action=export_pl';
+  var a = document.createElement('a'); a.href = url; a.download='';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+function doExportAll(){
+  var url = window.location.pathname + '?pl=' + encodeURIComponent(<?= json_encode($plId) ?>) + '&_action=export_all';
+  var a = document.createElement('a'); a.href = url; a.download='';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+function doImportBackup(input){
+  var file = input.files[0]; if(!file) return;
+  var status = document.getElementById('backupImportStatus');
+  status.textContent = 'A importar…';
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var raw = e.target.result;
+    try { JSON.parse(raw); } catch(err){ status.textContent = 'Ficheiro JSON inválido.'; return; }
+    $.ajax({
+      url: window.location.pathname + '?pl=' + encodeURIComponent(<?= json_encode($plId) ?>),
+      type: 'POST',
+      contentType: 'application/json',
+      data: raw,
+      dataType: 'json',
+      data: JSON.stringify({_action:'import_backup'}) // will not work, need different approach
+    });
+    // Use fetch instead
+    fetch(window.location.pathname + '?pl=' + encodeURIComponent(<?= json_encode($plId) ?>), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-Action':'import_backup'},
+      body: raw
+    }).then(r=>r.json()).then(function(r){
+      if(r.ok){
+        status.style.color = 'var(--accent)';
+        status.textContent = r.imported + ' lista(s) importada(s) com sucesso! A recarregar…';
+        setTimeout(function(){ location.reload(); }, 1200);
+      } else {
+        status.style.color = '#e05';
+        status.textContent = 'Erro: ' + (r.error||'desconhecido');
+      }
+    }).catch(function(){ status.textContent = 'Erro de rede.'; });
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+// ===== FIND DUPLICATES =====
+function openDupModal(){
+  var body = document.getElementById('dupModalBody');
+  body.innerHTML = '<div style="color:var(--text3);font-size:.8rem;padding:8px 0">A procurar…</div>';
+  openModal('dupModal');
+  post({_action:'find_duplicates'}, function(r){
+    if(!r.ok){ body.innerHTML = '<div style="color:#e05">Erro: '+(r.error||'')+'</div>'; return; }
+    // Clear duplicate highlights first
+    $('#songList .song-row').removeClass('is-dup');
+    $('#songList .dup-badge').remove();
+    if(!r.count){
+      body.innerHTML = '<div style="color:var(--text3);font-size:.8rem;padding:8px 0">✅ Sem duplicados encontrados!</div>';
+      return;
+    }
+    // Group by key
+    var groups = {};
+    r.duplicates.forEach(function(s){
+      var key = (s.title||'')+'|||' + (s.artist||'');
+      if(!groups[key]) groups[key] = [];
+      groups[key].push(s);
+      // Highlight in table
+      $('#songList .song-row[data-i="'+s.index+'"]').addClass('is-dup')
+        .find('.td-title').append('<span class="dup-badge">DUP</span>');
+    });
+    var html = '<div style="font-size:.75rem;color:var(--text3);margin-bottom:10px">'+r.count+' tema(s) duplicado(s) encontrado(s). Destacados a laranja na lista.</div>';
+    Object.keys(groups).forEach(function(k){
+      var g = groups[k];
+      html += '<div style="margin-bottom:10px;padding:8px 10px;border-radius:6px;background:var(--bg3);border-left:3px solid #f0a050">';
+      html += '<div style="font-weight:600;font-size:.8rem">' + escH(g[0].title) + '</div>';
+      html += '<div style="font-size:.72rem;color:var(--text3);margin-bottom:6px">' + escH(g[0].artist) + '</div>';
+      g.forEach(function(s){ html += '<div style="font-size:.7rem;color:var(--text3)">#'+(s.index+1)+' na lista</div>'; });
+      html += '</div>';
+    });
+    body.innerHTML = html;
+  });
+}
+
+// ===== BUTTON WIRING =====
+$('#backupBtn,#backupBtnM').on('click', function(){ closeOverflow(); openModal('backupModal'); });
+$('#dupBtn,#dupBtnM').on('click', function(){ closeOverflow(); openDupModal(); });
+
+// ===== STICKY HEADER: set CSS var to topbar height =====
+(function(){
+  function setTopbarH(){
+    var tb = document.querySelector('.topbar');
+    if(tb) document.documentElement.style.setProperty('--topbar-h', tb.offsetHeight+'px');
+  }
+  setTopbarH();
+  window.addEventListener('resize', setTopbarH);
+})();
+
+// ===== IMPORT BACKUP: also wire X-Action header approach =====
+// Override fetch call to use proper action param
+// (redefine doImportBackup cleanly)
+doImportBackup = function(input){
+  var file = input.files[0]; if(!file) return;
+  var status = document.getElementById('backupImportStatus');
+  status.style.color = 'var(--text3)';
+  status.textContent = 'A importar…';
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var raw = e.target.result;
+    var data;
+    try { data = JSON.parse(raw); } catch(err){ status.textContent = 'Ficheiro JSON inválido.'; return; }
+    // Wrap in a form post with _action
+    $.post(window.location.pathname + '?pl=' + encodeURIComponent(<?= json_encode($plId) ?>),
+      {_action:'import_backup', backup_data: raw},
+      function(r){
+        if(r.ok){
+          status.style.color = 'var(--accent)';
+          status.textContent = r.imported + ' lista(s) importada(s)! A recarregar…';
+          setTimeout(function(){ location.reload(); }, 1200);
+        } else {
+          status.style.color = '#e05';
+          status.textContent = 'Erro: ' + (r.error||'desconhecido');
+        }
+      }, 'json').fail(function(){ status.textContent = 'Erro de rede.'; });
+  };
+  reader.readAsText(file);
+  input.value = '';
+};
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(function(){});
 }
