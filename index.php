@@ -658,8 +658,16 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if($i>=0&&$i<count($songs)&&$title&&$artist){
             $songs[$i]['title']=$title;$songs[$i]['artist']=$artist;
             $songs[$i]['cifra_url']=$cu?:'N/A';$songs[$i]['cifra_source']=$cs;
-            $su2=trim($_POST['spotify_url']??'');
-            if($su2) $songs[$i]['spotify_url']=$su2;
+            // spotify_url: if key sent, update (empty string = clear/unlink)
+            if(isset($_POST['spotify_url'])){
+                $su2=trim($_POST['spotify_url']);
+                $songs[$i]['spotify_url'] = $su2;
+                // If URL cleared, also clear spotify_uri and duration_ms so sync shows as needed
+                if(!$su2){
+                    unset($songs[$i]['spotify_uri']);
+                    unset($songs[$i]['duration_ms']);
+                }
+            }
             saveSongs($pl,$songs);
             jsonOut(['ok'=>true,'title'=>$title,'artist'=>$artist,
                      'cifra_url'=>cifraUrl($songs[$i]),'cifra_label'=>cifraLabel($songs[$i]),'cifra_source'=>$cs,
@@ -1544,6 +1552,7 @@ $totalSongs  = count($songs);
 $artistCount = count(array_unique(array_column($songs,'artist')));
 $withCifra   = count(array_filter($songs, function($s){ return !empty($s['cifra_url'])&&$s['cifra_url']!=='N/A'; }));
 $durStr      = fmtMs(array_sum(array_column($songs,'duration_ms')));
+$needsSync   = $hasSpot ? count(array_filter($songs, function($s){ return empty($s['spotify_url']); })) : 0;
 $plSpotUrl   = $activePl['spotify_url']??('https://open.spotify.com/playlist/'.($activePl['spotify_id']??''));
 $authed      = isAuthed();
 $locked      = isLocked();
@@ -1718,7 +1727,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 /* ── TABLE ── */
 .table-wrap{border:1px solid var(--border);border-radius:var(--r2);overflow:visible;background:var(--bg2)}
 table{width:100%;border-collapse:collapse}
-thead th{font-family:'DM Mono',monospace;font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);padding:9px 13px;border-bottom:1px solid var(--border);text-align:left;background:var(--bg2);font-weight:400;position:sticky;top:var(--topbar-h,56px);z-index:10}
+thead th{font-family:'DM Mono',monospace;font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);padding:9px 13px;border-bottom:1px solid var(--border);text-align:left;background:var(--bg2);font-weight:400}
 tbody tr{border-bottom:1px solid var(--border);transition:background var(--tr)}
 tbody tr:last-child{border-bottom:none}
 tbody tr:hover{background:var(--bg3)}
@@ -1940,14 +1949,12 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 /* print header (hidden on screen) */
 .print-header{display:none}
+.sync-badge{display:inline-flex;align-items:center;justify-content:center;background:#e05;color:#fff;border-radius:9px;font-size:.58rem;font-weight:700;min-width:16px;height:16px;padding:0 4px;margin-left:4px;vertical-align:middle;line-height:1}
+.th-dur{font-size:.65rem;text-align:right;padding-right:6px!important;color:var(--text3);white-space:nowrap}
+.td-dur{font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text3);text-align:right;padding-right:6px!important;white-space:nowrap}
+.td-dur-empty{opacity:.3}
 .table-wrap{position:relative}
 thead th{background:var(--bg2)!important;box-shadow:0 1px 0 var(--border)}
-.sticky-panel{position:sticky;top:0;z-index:20;background:var(--bg);padding-bottom:4px}
-.td-spot-id{width:72px;font-family:'DM Mono',monospace;font-size:.62rem;white-space:nowrap}
-.th-spot-id{font-size:.56rem;white-space:nowrap}
-.spot-id-link{color:var(--text3);text-decoration:none;border-bottom:1px dotted var(--border2)}
-.spot-id-link:hover{color:var(--accent);border-color:var(--accent)}
-.spot-id-empty{color:var(--border2)}
 .song-row.is-dup{background:rgba(255,160,50,.07)}
 .song-row.is-dup td{color:var(--text)}
 .dup-badge{display:inline-block;background:#f0a050;color:#fff;border-radius:3px;font-size:.55rem;padding:1px 4px;margin-left:5px;vertical-align:middle;font-weight:700;letter-spacing:.04em}
@@ -2230,6 +2237,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
       <button class="btn btn-outline" id="syncBtn" title="Sincronizar com Spotify">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
         <span class="btn-lbl">Sync</span>
+        <?php if($needsSync>0): ?><span class="sync-badge" id="syncBadge"><?= $needsSync ?></span><?php endif; ?>
       </button>
       <?php endif; ?>
       <button class="btn btn-outline" id="printBtn" title="Imprimir lista" onclick="openPrintModal()">
@@ -2364,8 +2372,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             <th>Artista</th>
             <th class="td-cifra th-cifra-print">Cifra</th>
             <th class="td-spot"></th>
-            <th class="td-spot-id th-spot-id" title="ID Spotify">Spot.</th>
-            <th class="th-dur-print" style="display:none">Duração</th>
+            <th class="th-dur">Dur.</th>
             <th class="td-actions">Ações</th>
           </tr>
         </thead>
@@ -2416,19 +2423,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
                 </a>
               <?php endif; ?>
             </td>
-            <td class="td-spot-id">
-              <?php
-                $spotUri = $song['spotify_uri'] ?? '';
-                $spotId  = $spotUri ? preg_replace('/^spotify:track:/','',$spotUri) : '';
-                if(!$spotId && $su) { preg_match('/\/track\/([A-Za-z0-9]+)/',$su,$m); $spotId=$m[1]??'';}  
-                if($spotId):
-              ?>
-                <a href="<?= htmlspecialchars($su) ?>" target="_blank" class="spot-id-link" title="<?= htmlspecialchars($su) ?>"><?= htmlspecialchars(substr($spotId,0,8)) ?>…</a>
-              <?php else: ?>
-                <span class="spot-id-empty">—</span>
-              <?php endif; ?>
-            </td>
-            <td class="td-dur-print" style="display:none"><?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '' ?></td>
+            <td class="td-dur<?= empty($song['duration_ms']) ? ' td-dur-empty' : '' ?>"><?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '—' ?></td>
             <td class="td-actions">
               <div class="aw">
                 <button class="btn btn-ghost edit-btn" data-i="<?= $i ?>" title="Editar">
@@ -3309,7 +3304,8 @@ function saveSong(){
       var idx=parseInt(data.index);
       SONGS[idx].title=r.title; SONGS[idx].artist=r.artist;
       SONGS[idx].cifra_url=data.cifra_url; SONGS[idx].cifra_source=data.cifra_source;
-      var row=$('#songList tr[data-i="'+idx+'"]');
+      SONGS[idx].spotify_url=r.spotify_url||'';
+      var row=$('#songList tr[data-i="'+idx+'"');
       row.find('.td-title').text(r.title);
       row.find('.td-artist').text(r.artist);
       row.data('title',r.title).data('artist',r.artist);
@@ -3317,10 +3313,21 @@ function saveSong(){
       var cell=row.find('.td-cifra');
       if(r.cifra_url){ cell.html('<a href="'+r.cifra_url+'" target="_blank" class="badge badge-green" style="text-decoration:none">'+r.cifra_label+'</a>'); }
       else { cell.html('<span class="badge badge-gray">—</span>'); }
+      // Update Spotify icon + sync badge live
+      var su=r.spotify_url||'';
+      var sIcon=su?'<a href="'+su+'" target="_blank" class="spot-link"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg></a>':'';
+      row.find('.td-spot').html(sIcon);
+      var missing=SONGS.filter(function(s){return !s.spotify_url;}).length;
+      if(missing>0){$('#syncBadge').text(missing).show();}else{$('#syncBadge').hide();}
       row.addClass('just-edited'); setTimeout(function(){ row.removeClass('just-edited'); },1300);
       closeModal('songModal');
     });
   } else {
+    var rawSpotAdd = $('#smSpotUrl').val().trim();
+    if(rawSpotAdd && !rawSpotAdd.startsWith('http')){
+      rawSpotAdd = 'https://open.spotify.com/track/' + rawSpotAdd.replace(/^spotify:track:/,'');
+    }
+    data.spotify_url = rawSpotAdd;
     data._action='add_song';
     post(data,function(r){
       $('#smSaveBtn').prop('disabled',false).text('Adicionar');
@@ -4591,15 +4598,6 @@ function openDupModal(){
 $('#backupBtn,#backupBtnM').on('click', function(){ closeOverflow(); openModal('backupModal'); });
 $('#dupBtn,#dupBtnM').on('click', function(){ closeOverflow(); openDupModal(); });
 
-// ===== STICKY HEADER: set CSS var to topbar height =====
-(function(){
-  function setTopbarH(){
-    var tb = document.querySelector('.topbar');
-    if(tb) document.documentElement.style.setProperty('--topbar-h', tb.offsetHeight+'px');
-  }
-  setTopbarH();
-  window.addEventListener('resize', setTopbarH);
-})();
 
 // ===== IMPORT BACKUP: also wire X-Action header approach =====
 // Override fetch call to use proper action param
