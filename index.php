@@ -4804,6 +4804,24 @@ doImportBackup = function(input){
   input.value = '';
 };
 // ===== POSITION DROPDOWN =====
+function resyncPosSelects() {
+  var $rows = $("#songList tr.song-row:visible");
+  var total = $rows.length;
+  $rows.each(function(i) {
+    var $sel = $(this).find(".pos-select");
+    // Rebuild options only if total changed (e.g. after add/delete)
+    if ($sel.find("option").length !== total) {
+      var html = "";
+      for (var p = 1; p <= total; p++) {
+        html += '<option value="' + p + '">' + String(p).padStart(2,"0") + '</option>';
+      }
+      $sel.html(html);
+    }
+    // Always set selected to current position
+    $sel.val(i + 1);
+  });
+}
+
 $(document).on("change",".pos-select",function(){
   var $sel=$(this), sid=$sel.data("sid")||"";
   var newPos=parseInt($sel.val());
@@ -4816,7 +4834,7 @@ $(document).on("change",".pos-select",function(){
   else $rows.not($row).eq(newPos-2).after($row);
   var ids=$("#songList tr.song-row").map(function(){ return $(this).data("sid")||$(this).data("i"); }).get();
   showSaving("Salvando…");
-  post({_action:"reorder_songs",order:JSON.stringify(ids)},function(){ showSaving(); hideSaving(); renumber(); });
+  post({_action:"reorder_songs",order:JSON.stringify(ids)},function(){ showSaving(); hideSaving(); renumber(); resyncPosSelects(); });
 });
 
 if ('serviceWorker' in navigator) {
