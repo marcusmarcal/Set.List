@@ -143,6 +143,21 @@ function songDupExists(array $haystack, array $needle): bool {
     return false;
 }
 
+function songIdxById($songs, $sid){
+    foreach($songs as $i=>$s){ if(($s['id']??'')===(string)trim($sid)) return $i; }
+    return -1;
+}
+function resolveToIndices($songs, $refs){
+    $byId=[];
+    foreach($songs as $i=>$s) if(!empty($s['id'])) $byId[$s['id']]=(int)$i;
+    $out=[];
+    foreach($refs as $ref){
+        $r=(string)$ref;
+        if(isset($byId[$r])) $out[]=$byId[$r];
+        elseif(is_numeric($r)) $out[]=(int)$r;
+    }
+    return array_values(array_unique($out));
+}
 function sortSongs($songs, $col, $ord='asc') {
     usort($songs, function($a,$b) use($col,$ord) {
         $cmp = strcmp(strtoupper($a[$col]??''), strtoupper($b[$col]??''));
@@ -642,8 +657,16 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $pl=getActivePl(); $songs=loadSongs($pl);
         $order=json_decode($_POST['order']??'[]',true);
         if(is_array($order)){
-            $s=[];foreach($order as $i) if(isset($songs[(int)$i])) $s[]=$songs[(int)$i];
-            saveSongs($pl,$s);
+            $byId=[]; foreach($songs as $s2) if(!empty($s2['id'])) $byId[$s2['id']]=$s2;
+            $sorted=[];
+            foreach($order as $ref){
+                $ref=(string)$ref;
+                if(isset($byId[$ref])) $sorted[]=$byId[$ref];
+                elseif(is_numeric($ref)&&isset($songs[(int)$ref])) $sorted[]=$songs[(int)$ref];
+            }
+            $seen=array_column($sorted,'id');
+            foreach($songs as $s2){ if(!in_array($s2['id']??'',$seen,true)) $sorted[]=$s2; }
+            saveSongs($pl,$sorted);
         }
         jsonOut(['ok'=>true]);
     }
@@ -652,7 +675,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     if($act==='edit_song'){
         needAuth();
         $pl=getActivePl(); $songs=loadSongs($pl);
-        $i=(int)($_POST['index']??-1);
+        $sid=trim($_POST['song_id']??'');
+        $i=$sid ? songIdxById($songs,$sid) : (int)($_POST['index']??-1);
         $title=trim($_POST['title']??''); $artist=trim($_POST['artist']??'');
         $cu=trim($_POST['cifra_url']??''); $cs=trim($_POST['cifra_source']??'cifraclub');
         if($i>=0&&$i<count($songs)&&$title&&$artist){
@@ -699,7 +723,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     if($act==='delete_song'){
         needAuth();
         $pl=getActivePl(); $songs=loadSongs($pl);
-        $i=(int)($_POST['index']??-1);
+        $sid=trim($_POST['song_id']??'');
+        $i=$sid ? songIdxById($songs,$sid) : (int)($_POST['index']??-1);
         if($i>=0&&$i<count($songs)){ array_splice($songs,$i,1); saveSongs($pl,$songs); }
         jsonOut(['ok'=>true]);
     }
@@ -709,7 +734,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         needAuth();
         $srcPl  = getActivePl();
         $songs  = loadSongs($srcPl);
-        $i      = (int)($_POST['index']??-1);
+        $sid2   = trim($_POST['song_id']??'');
+        $i      = $sid2 ? songIdxById($songs,$sid2) : (int)($_POST['index']??-1);
         $destId = trim($_POST['dest_pl']??'');
         if($i<0||$i>=count($songs)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
         $pls = loadPlaylists();
@@ -732,7 +758,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         needAuth();
         $srcPl  = getActivePl();
         $songs  = loadSongs($srcPl);
-        $i      = (int)($_POST['index']??-1);
+        $sid6   = trim($_POST['song_id']??'');
+        $i      = $sid6 ? songIdxById($songs,$sid6) : (int)($_POST['index']??-1);
         $destId = trim($_POST['dest_pl']??'');
         if($i<0||$i>=count($songs)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
         $pls = loadPlaylists();
@@ -770,13 +797,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $songs = loadSongs($srcPl);
         $destSongs = [];
         $added = 0;
+        $indices=resolveToIndices($songs,json_decode($_POST['indices']??'[]',true));
         foreach($indices as $i){
             if(!isset($songs[(int)$i])) continue;
             $destSongs[] = $songs[(int)$i]; $added++;
         }
         saveSongs($newPl, $destSongs);
         if($act==='create_and_move'){
-            $toRemove = array_map('intval',$indices); rsort($toRemove);
+            $toRemove = $indices; rsort($toRemove);
             foreach($toRemove as $i) array_splice($songs,$i,1);
             saveSongs($srcPl,$songs);
         }
@@ -789,13 +817,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $srcPl  = getActivePl();
         $songs  = loadSongs($srcPl);
         $destId = trim($_POST['dest_pl']??'');
-        $indices = json_decode($_POST['indices']??'[]',true);
-        if(!is_array($indices)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $refs7 = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($refs7)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
         $pls=loadPlaylists(); $destPl=null;
         foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
         if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
         $destSongs=loadSongs($destPl);
         $added=0; $skipped=0;
+        $indices=resolveToIndices($songs,$refs7);
         foreach($indices as $i){
             if(!isset($songs[(int)$i])) continue;
             $s=$songs[(int)$i];
@@ -812,14 +841,15 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $srcPl  = getActivePl();
         $songs  = loadSongs($srcPl);
         $destId = trim($_POST['dest_pl']??'');
-        $indices = json_decode($_POST['indices']??'[]',true);
-        if(!is_array($indices)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $refs8 = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($refs8)||!$destId) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
         $pls=loadPlaylists(); $destPl=null;
         foreach($pls as $p) if($p['id']===$destId){ $destPl=$p; break; }
         if(!$destPl) jsonOut(['ok'=>false,'error'=>'Lista destino não encontrada.']);
         $destSongs=loadSongs($destPl);
         $added=0; $skipped=0;
         $toRemove=[];
+        $indices=resolveToIndices($songs,$refs8);
         foreach($indices as $i){
             $i=(int)$i;
             if(!isset($songs[$i])) continue;
@@ -840,9 +870,9 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         needAuth();
         $pl = getActivePl();
         $songs = loadSongs($pl);
-        $indices = json_decode($_POST['indices']??'[]',true);
-        if(!is_array($indices)) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
-        $toRemove = array_map('intval',$indices);
+        $refs9 = json_decode($_POST['indices']??'[]',true);
+        if(!is_array($refs9)) jsonOut(['ok'=>false,'error'=>'Parâmetros inválidos.']);
+        $toRemove = resolveToIndices($songs,$refs9);
         rsort($toRemove);
         $removed = 0;
         foreach($toRemove as $i){
@@ -1129,6 +1159,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     'artist'      => $s['artist'],
                     'uri'         => $uri,
                     'spotify_url' => $spotUrl,
+                    'spot_name'   => $spotInfo['name'],
                     'spot_artist' => $spotInfo['artist'],
                     'spot_duration_ms' => $spotInfo['duration_ms'] ?? 0,
                     'missing'     => $missing,
@@ -1167,11 +1198,19 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             }
         }
 
+        $nameDiffs=[];
+        foreach($songs as $ndx=>$s){
+            if(empty($s['spotify_uri'])||empty($s['spotify_url'])) continue;
+            $si=$spotTracks[$s['spotify_uri']]??null; if(!$si) continue;
+            if(mb_strtolower(trim($s['title']))!==mb_strtolower(trim($si['name'])))
+                $nameDiffs[]=['_idx'=>$ndx,'id'=>($s['id']??''),'title'=>$s['title'],'spot_name'=>$si['name'],'artist'=>$s['artist'],'spotify_url'=>$s['spotify_url']];
+        }
         jsonOut(['ok'=>true,
                  'only_spotify' =>$onlySpotify,
                  'only_local'   =>$onlyLocal,
                  'missing_meta' =>$missingMeta,
                  'suggest_swap' =>$suggestSwap,
+                 'name_diffs'   =>$nameDiffs,
                  'spotify_total'=>count($spotTracks),
                  'local_total'  =>count($localSongs)]);
     }
@@ -1202,6 +1241,11 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     $songs[$idx]['artist'] = $item['spot_artist'];
                 if(!empty($item['spot_duration_ms']) && empty($songs[$idx]['duration_ms']))
                     $songs[$idx]['duration_ms'] = (int)$item['spot_duration_ms'];
+                // Overwrite local title with Spotify's version (better casing/formatting)
+                if(!empty($item['spot_name'])){
+                    $songs[$idx]['title']        = $item['spot_name'];
+                    $songs[$idx]['spotify_name'] = $item['spot_name'];
+                }
             }
         }
         // Add from Spotify to local
@@ -1287,6 +1331,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     if(empty($s['spotify_uri']))  $songs[$idx]['spotify_uri']  = $found['uri'];
                 }
             }
+        }
+        // Apply name fixes (rename local to Spotify name)
+        $fixNames=json_decode($_POST['fix_names']??'[]',true);
+        if(is_array($fixNames)) foreach($fixNames as $fn){
+            $fi=!empty($fn['id'])?songIdxById($songs,(string)$fn['id']):(int)($fn['_idx']??-1);
+            if($fi>=0&&!empty($fn['spot_name'])){ $songs[$fi]['title']=$fn['spot_name']; $songs[$fi]['spotify_name']=$fn['spot_name']; }
         }
         // Single save at the end with all changes
         saveSongs($pl,$songs);
@@ -1949,6 +1999,15 @@ select.fi{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 
 /* print header (hidden on screen) */
 .print-header{display:none}
+.sync-confirm-section{margin-bottom:14px}
+.sync-row-check{display:flex;align-items:flex-start;gap:8px;padding:5px 0;cursor:pointer;border-bottom:1px solid var(--border)}
+.sync-row-check:last-child{border-bottom:none}
+.sr-info{font-size:.78rem;line-height:1.4}
+.sync-confirm-head{font-size:.65rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;font-weight:600}
+.sync-confirm-row{padding:4px 0;border-bottom:1px solid var(--border);line-height:1.4}
+.sync-confirm-row:last-child{border-bottom:none}
+.pos-select{width:44px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:.72rem;padding:1px 2px;cursor:pointer}
+.pos-select:focus{outline:1px solid var(--accent)}
 .sync-badge{display:inline-flex;align-items:center;justify-content:center;background:#e05;color:#fff;border-radius:9px;font-size:.58rem;font-weight:700;min-width:16px;height:16px;padding:0 4px;margin-left:4px;vertical-align:middle;line-height:1}
 .th-dur{font-size:.65rem;text-align:right;padding-right:6px!important;color:var(--text3);white-space:nowrap}
 .td-dur{font-family:'DM Mono',monospace;font-size:.72rem;color:var(--text3);text-align:right;padding-right:6px!important;white-space:nowrap}
@@ -2385,7 +2444,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             $isAuto = (!$cr || $cr==='N/A') && $cu;  // true = slug-generated, not manually saved
           ?>
           <tr data-i="<?= $i ?>"
-              data-sid="<?= htmlspecialchars($song['id']??'',ENT_QUOTES) ?>"
+              data-sid="<?= htmlspecialchars($song['id']??'') ?>"
               data-title="<?= htmlspecialchars($song['title'],ENT_QUOTES) ?>"
               data-artist="<?= htmlspecialchars($song['artist'],ENT_QUOTES) ?>"
               data-cifra-url="<?= htmlspecialchars($cr,ENT_QUOTES) ?>"
@@ -2397,9 +2456,15 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
               </span>
             </td>
             <td style="padding:0 4px 0 8px">
-              <input type="checkbox" class="song-check" data-i="<?= $i ?>" style="accent-color:var(--accent);cursor:pointer;margin:0">
+              <input type="checkbox" class="song-check" data-i="<?= $i ?>" data-sid="<?= htmlspecialchars($song['id']??'') ?>" style="accent-color:var(--accent);cursor:pointer;margin:0">
             </td>
-            <td class="td-num"><?= str_pad($i+1,2,'0',STR_PAD_LEFT) ?></td>
+            <td class="td-num">
+              <select class="pos-select" data-sid="<?= htmlspecialchars($song['id']??'') ?>" title="Mover para posição">
+                <?php for($p=1;$p<=count($songs);$p++): ?>
+                <option value="<?= $p ?>"<?= $p===($i+1)?' selected':'' ?>><?= str_pad($p,2,'0',STR_PAD_LEFT) ?></option>
+                <?php endfor; ?>
+              </select>
+            </td>
             <td class="td-title"><?= htmlspecialchars($song['title_display'] ?? cleanTitle($song['title'])) ?></td>
             <td class="td-artist">
               <?= htmlspecialchars($song['artist']) ?>
@@ -2418,7 +2483,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             </td>
             <td class="td-spot">
               <?php if($su): ?>
-                <a href="<?= htmlspecialchars($su) ?>" target="_blank" class="spot-link">
+                <a href="<?= htmlspecialchars($su) ?>" target="_blank" class="spot-link" title="<?= htmlspecialchars(!empty($song['spotify_name']) ? $song['spotify_name'] . ' — ' . ($song['artist'] ?? '') : 'Abrir no Spotify') ?>">
                   <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.633-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.521-1.068 9.376-.862 13.066 1.346a.937.937 0 0 1-.906 1.604z"/></svg>
                 </a>
               <?php endif; ?>
@@ -2426,11 +2491,11 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
             <td class="td-dur<?= empty($song['duration_ms']) ? ' td-dur-empty' : '' ?>"><?= !empty($song['duration_ms']) ? fmtMs((int)$song['duration_ms']) : '—' ?></td>
             <td class="td-actions">
               <div class="aw">
-                <button class="btn btn-ghost edit-btn" data-i="<?= $i ?>" title="Editar">
+                <button class="btn btn-ghost edit-btn" data-i="<?= $i ?>" data-sid="<?= htmlspecialchars($song['id']??'') ?>" title="Editar">
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   <span class="btn-lbl">Editar</span>
                 </button>
-                <button class="btn btn-danger del-btn" data-i="<?= $i ?>" title="Excluir">
+                <button class="btn btn-danger del-btn" data-i="<?= $i ?>" data-sid="<?= htmlspecialchars($song['id']??'') ?>" title="Excluir">
                   <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
                 </button>
               </div>
@@ -2504,6 +2569,7 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
     <div class="modal-sub" id="songModalSub"></div>
     <input type="hidden" id="songModalMode" value="add">
     <input type="hidden" id="songModalIdx" value="">
+    <input type="hidden" id="songModalSid" value="">
     <div class="fg">
       <label class="fl">Título</label>
       <input class="fi" type="text" id="smTitle" placeholder="Ex: Resposta">
@@ -2804,6 +2870,18 @@ $archivedPlaylists= array_values(array_filter($playlists, fn($p)=>!empty($p['arc
 <!-- Composer modal -->
 
 
+<!-- Sync confirm modal -->
+<div class="modal-overlay" id="syncConfirmModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">Confirmar Sincronização</div>
+    <div id="syncConfirmBody" style="padding:12px 26px;max-height:60vh;overflow-y:auto;font-size:.78rem"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('syncConfirmModal')">Cancelar</button>
+      <button class="btn btn-primary" id="syncConfirmOkBtn">Confirmar e Aplicar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Sync with Spotify modal -->
 <div class="modal-overlay" id="syncModal">
   <div class="modal" style="max-width:560px">
@@ -2982,6 +3060,7 @@ var SONGS   = <?php
   foreach($songs as $s) {
       $dms = isset($s['duration_ms']) ? (int)$s['duration_ms'] : 0;
       $songData[] = array(
+          'id'          => $s['id'] ?? '',
           'title'       => $s['title'],
           'artist'      => $s['artist'],
           'cifra_url'   => isset($s['cifra_url']) ? $s['cifra_url'] : '',
@@ -3087,7 +3166,7 @@ $(function(){
       }
     },
     update: function(){
-      var ids=$('#songList tr.song-row').map(function(){ return $(this).data('i'); }).get();
+      var ids=$('#songList tr.song-row').map(function(){ return $(this).data('sid')||$(this).data('i'); }).get();
       showSaving('Salvando…');
       post({_action:'reorder_songs', order:JSON.stringify(ids)}, function(){
         showSaving(); hideSaving(); renumber();
@@ -3177,7 +3256,7 @@ function setSrc(src){
 }
 
 // ── Song modal ─────────────────────────────────────────────────
-function openSongModal(mode, idx) {
+function openSongModal(mode, idx, sid) {
   $('#smError').hide();
   if(mode==='add'){
     $('#songModalTitle').text('Adicionar Música');
@@ -3186,7 +3265,7 @@ function openSongModal(mode, idx) {
     $('#smSpotHint').html('');
     $('#smCifraHint').html('');
     setSrc('cifraclub');
-    $('#songModalMode').val('add'); $('#songModalIdx').val('');
+    $('#songModalMode').val('add'); $('#songModalIdx').val(''); $('#songModalSid').val('');
     $('#smSaveBtn').text('Adicionar');
   } else {
     var s=SONGS[idx];
@@ -3206,7 +3285,7 @@ function openSongModal(mode, idx) {
         ? 'URL gerada por slug — <a href="'+urls[0]+'" target="_blank" style="color:var(--accent)">verifica se existe ↗</a>. Edita se necessário.'
         : '');
     }
-    $('#songModalMode').val('edit'); $('#songModalIdx').val(idx);
+    $('#songModalMode').val('edit'); $('#songModalIdx').val(idx); $('#songModalSid').val(sid||'');
     $('#smSaveBtn').text('Salvar');
     // Spotify URL field
     var su = s.spotify_url || '';
@@ -3274,8 +3353,10 @@ function searchCifraAuto(title, artist){
 $('#addSongBtn').on('click', function(){ guardedAction(function(){ openSongModal('add'); }); });
 
 $(document).on('click','.edit-btn',function(){
+  var sid=$(this).data('sid')||'';
   var idx=parseInt($(this).data('i'));
-  guardedAction(function(){ openSongModal('edit',idx); });
+  if(sid){ var fi=SONGS.findIndex(function(s){return s.id===sid;}); if(fi>=0) idx=fi; }
+  guardedAction(function(){ openSongModal('edit',idx,sid); });
 });
 
 $('#smSaveBtn').on('click', saveSong);
@@ -3291,7 +3372,7 @@ function saveSong(){
 
   var data={title:title,artist:artist,cifra_url:cu,cifra_source:_curSongSrc};
   if(mode==='edit'){
-    data._action='edit_song'; data.index=$('#songModalIdx').val();
+    data._action='edit_song'; data.index=$('#songModalIdx').val(); data.song_id=$('#songModalSid').val()||'';
     // Normalise Spotify URL input: accept full URL or bare ID
     var rawSpot = $('#smSpotUrl').val().trim();
     if(rawSpot && !rawSpot.startsWith('http')){
@@ -3332,19 +3413,19 @@ function saveSong(){
     post(data,function(r){
       $('#smSaveBtn').prop('disabled',false).text('Adicionar');
       if(!r.ok){ $('#smError').text(r.error||'Erro ao adicionar.').show(); return; }
-      SONGS.push({title:r.title,artist:r.artist,cifra_url:data.cifra_url,cifra_source:data.cifra_source,spotify_url:''});
+      SONGS.push({id:r.id||'',title:r.title,artist:r.artist,cifra_url:data.cifra_url,cifra_source:data.cifra_source,spotify_url:''});
       var num=String(r.index+1).padStart(2,'0');
       var cifraBadge=r.cifra_url?'<a href="'+r.cifra_url+'" target="_blank" class="badge badge-green" style="text-decoration:none">'+r.cifra_label+'</a>':'<span class="badge badge-gray">—</span>';
       var row='<tr data-i="'+r.index+'" data-title="'+escH(r.title)+'" data-artist="'+escH(r.artist)+'" data-cifra-url="'+escH(data.cifra_url)+'" data-cifra-src="'+escH(data.cifra_source)+'" class="song-row">'
         +'<td style="width:34px;padding-right:0"><span class="drag-handle"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg></span></td>'
-        +'<td style="padding:0 4px 0 8px"><input type="checkbox" class="song-check" data-i="'+r.index+'" style="accent-color:var(--accent);cursor:pointer;margin:0"></td>'
+        +'<td style="padding:0 4px 0 8px"><input type="checkbox" class="song-check" data-i="'+r.index+'" data-sid="'+(r.id||r.index)+'" style="accent-color:var(--accent);cursor:pointer;margin:0"></td>'
         +'<td class="td-num">'+num+'</td>'
         +'<td class="td-title">'+escH(r.title)+'</td>'
         +'<td class="td-artist">'+escH(r.artist)+'</td>'
         +'<td class="td-cifra">'+cifraBadge+'</td>'
         +'<td class="td-spot"></td>'
-        +'<td class="td-actions"><div class="aw"><button class="btn btn-ghost edit-btn" data-i="'+r.index+'" title="Editar"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><span class="btn-lbl">Editar</span></button>'
-        +'<button class="btn btn-danger del-btn" data-i="'+r.index+'" title="Excluir"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>'
+        +'<td class="td-actions"><div class="aw"><button class="btn btn-ghost edit-btn" data-i="'+r.index+'" data-sid="'+(r.id||r.index)+'" title="Editar"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><span class="btn-lbl">Editar</span></button>'
+        +'<button class="btn btn-danger del-btn" data-i="'+r.index+'" data-sid="'+(r.id||r.index)+'" title="Excluir">'+ '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>'
         +'</div></td></tr>';
       $('#songList').append(row);
       closeModal('songModal');
@@ -3355,13 +3436,13 @@ function saveSong(){
 
 // ── Delete song ────────────────────────────────────────────────
 $(document).on('click','.del-btn',function(){
-  var idx=parseInt($(this).data('i'));
+  var sid=$(this).data('sid')||'';
+  var $row=$(this).closest('tr');
   guardedAction(function(){
     if(!confirm('Excluir esta música?')) return;
-    post({_action:'delete_song',index:idx},function(r){
-      if(r.ok){
-        $('tr[data-i="'+idx+'"]').fadeOut(200,function(){ $(this).remove(); renumber(); });
-        SONGS.splice(idx,1);
+    post({_action:'delete_song',song_id:sid},function(r){
+      if(r.ok){ $row.fadeOut(200,function(){ $(this).remove(); renumber(); });
+        var fi=SONGS.findIndex(function(s){return s.id===sid;}); if(fi>=0) SONGS.splice(fi,1);
       }
     });
   });
@@ -3774,14 +3855,15 @@ $('#syncReorderBtn').on('click', function(){
   });
 });
 
-$('#syncBtn').on('click', function(){
+function doOpenSync(){
   guardedAction(function(){
     _syncDiff = null;
     $('#syncDiffWrap,#syncResult,#syncLoadingWrap').hide();
     $('#syncApplyBtn').hide();
     openModal('syncModal');
   });
-});
+}
+$('#syncBtn').on('click', doOpenSync);
 
 $('#syncAnalyseBtn').on('click', function(){
   $('#syncLoadingWrap').show();
@@ -3882,6 +3964,7 @@ function renderSyncDiff(r){
             +' data-idx="'+s._idx+'"'
             +' data-spotify-url="'+escH(s.spotify_url)+'"'
             +' data-spotify-uri="'+escH(s.uri)+'"'
+            +' data-spot-name="'+escH(s.spot_name||'')+'"'
             +' data-spot-artist="'+escH(s.spot_artist||'')+'"'
             +' data-spot-duration="'+(s.spot_duration_ms||0)+'"'
             +' style="accent-color:var(--accent)" checked>'
@@ -3926,7 +4009,28 @@ function renderSyncDiff(r){
     $('#syncSwapWrap,#syncSwapHr').hide();
   }
 
-  var anyDiff = onlySpot.length || onlyLocal.length || missingMeta.length || suggestSwap.length;
+  // Name diffs section
+  var nameDiffs = r.name_diffs||[];
+  if(nameDiffs.length){
+    var nd=$('<div id="syncNameDiffWrap"><hr style="border-color:var(--border);margin:10px 0">'
+      +'<div class="sync-section-head" style="display:flex;justify-content:space-between;align-items:center">'
+      +'🔤 Nomes diferentes no Spotify ('+nameDiffs.length+') '
+      +'<label style="font-size:.7rem;font-weight:400;cursor:pointer"><input type="checkbox" id="syncFixNameAll" style="accent-color:var(--accent)" checked> todos</label>'
+      +'</div><div style="font-size:.72rem;color:var(--text3);margin-bottom:8px">Marca para substituir o nome local pelo nome do Spotify.</div>');
+    nameDiffs.forEach(function(s){
+      nd.append($('<label class="sync-row sync-row-check">'
+        +'<input type="checkbox" class="sync-fix-name" data-idx="'+s._idx+'" data-id="'+escH(s.id||'')+'" data-spot-name="'+escH(s.spot_name)+'" data-title="'+escH(s.title)+'" checked>'
+        +'<span class="sr-info"><span style="text-decoration:line-through;color:var(--text3)">'+escH(s.title)+'</span>'
+        +' → <b>'+escH(s.spot_name)+'</b>'
+        +' <span class="sr-artist">— '+escH(s.artist)+'</span>'
+        +' <a href="'+escH(s.spotify_url)+'" target="_blank" style="color:var(--accent);font-size:.65rem;margin-left:4px">↗</a>'
+        +'</span></label>'));
+    });
+    nd.append($('</div>'));
+    $('#syncDiffWrap').append(nd);
+  }
+
+  var anyDiff = onlySpot.length || onlyLocal.length || missingMeta.length || suggestSwap.length || nameDiffs.length;
   if(!anyDiff){
     $('#syncNoChanges').show();
     $('#syncOnlySpotWrap,#syncOnlyLocalWrap,#syncMissingUrlWrap').hide();
@@ -3937,6 +4041,7 @@ function renderSyncDiff(r){
   }
   $('#syncDiffWrap').show();
 }
+$(document).on('change','#syncFixNameAll',function(){ $('.sync-fix-name').prop('checked',this.checked); });
 
 // Select-all helpers
 $('#syncAddLocalAll').on('change', function(){ $('.sync-add-local').prop('checked', this.checked); });
@@ -3959,6 +4064,7 @@ $('#syncApplyBtn').on('click', function(){
   var addSpotify    = [];
   var fillUrls      = [];
   var swapVersions  = [];
+  var fixNamesArr   = [];
 
   $('.sync-add-local:checked').each(function(){ addLocal.push($(this).data('uri')); });
   $('.sync-rem-spot:checked').each(function(){ removeSpot.push($(this).data('uri')); });
@@ -3968,9 +4074,13 @@ $('#syncApplyBtn').on('click', function(){
       idx          : parseInt($(this).data('idx')),
       spotify_url  : $(this).data('spotify-url'),
       spotify_uri  : $(this).data('spotify-uri'),
+      spot_name    : $(this).data('spot-name') || '',
       spot_artist  : $(this).data('spot-artist') || '',
       spot_duration_ms: parseInt($(this).data('spot-duration')) || 0
     });
+  });
+  $('.sync-fix-name:checked').each(function(){
+    fixNamesArr.push({_idx:parseInt($(this).data('idx')),id:$(this).data('id')||'',spot_name:$(this).data('spot-name')||'',_title:$(this).data('title')||''});
   });
   $('.sync-swap:checked').each(function(){
     swapVersions.push({
@@ -3983,7 +4093,7 @@ $('#syncApplyBtn').on('click', function(){
     });
   });
 
-  if(!addLocal.length && !removeSpot.length && !addSpotify.length && !fillUrls.length && !swapVersions.length){
+  if(!addLocal.length && !removeSpot.length && !addSpotify.length && !fillUrls.length && !swapVersions.length && !fixNamesArr.length){
     toast('Nenhuma opção seleccionada.');
     return;
   }
@@ -3994,11 +4104,66 @@ $('#syncApplyBtn').on('click', function(){
   if(removeSpot.length)   msgs.push('− '+removeSpot.length+' música(s) do Spotify');
   if(fillUrls.length)     msgs.push('🔗 Preencher '+fillUrls.length+' metadado(s) em falta');
   if(swapVersions.length) msgs.push('🔀 Substituir '+swapVersions.length+' versão(ões) pela mais popular');
-  if(!confirm('Confirmas as seguintes alterações?\n\n• '+msgs.join('\n• '))) return;
+  // Build confirm modal body
+  var html = '';
+  if(addLocal.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">✅ Adicionar à lista local ('+addLocal.length+')</div>';
+    (_syncDiff.only_spotify||[]).forEach(function(t){ if(addLocal.indexOf(t.uri||'')<0) return;
+      html += '<div class="sync-confirm-row"><b>'+escH(t.name)+'</b> <span class="sr-artist">— '+escH(t.artist)+'</span></div>'; });
+    html += '</div>';
+  }
+  if(removeSpot.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">🗑 Remover do Spotify ('+removeSpot.length+')</div>';
+    (_syncDiff.only_spotify||[]).forEach(function(t){ if(removeSpot.indexOf(t.uri||'')<0) return;
+      html += '<div class="sync-confirm-row"><b>'+escH(t.name)+'</b> <span class="sr-artist">— '+escH(t.artist)+'</span></div>'; });
+    html += '</div>';
+  }
+  if(addSpotify.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">✅ Adicionar ao Spotify ('+addSpotify.length+')</div>';
+    (_syncDiff.only_local||[]).forEach(function(s){ var k=s.title+'|'+s.artist; if(addSpotify.indexOf(k)<0) return;
+      html += '<div class="sync-confirm-row"><b>'+escH(s.title)+'</b> <span class="sr-artist">— '+escH(s.artist)+'</span></div>'; });
+    html += '</div>';
+  }
+  if(fillUrls.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">🔗 Vincular + sobrescrever nome ('+fillUrls.length+')</div>';
+    (_syncDiff.missing_meta||[]).forEach(function(s){
+      var matched=fillUrls.filter(function(f){return f.idx===s._idx;}); if(!matched.length) return;
+      html += '<div class="sync-confirm-row">';
+      if(s.spot_name && s.spot_name!==s.title)
+        html += '<span style="color:var(--text3);text-decoration:line-through;font-size:.7rem">'+escH(s.title)+'</span> → <b>'+escH(s.spot_name)+'</b>';
+      else html += '<b>'+escH(s.title)+'</b>';
+      html += ' <span class="sr-artist">— '+escH(s.spot_artist||s.artist)+'</span>';
+      html += ' <a href="'+escH(s.spotify_url)+'" target="_blank" style="color:var(--accent);font-size:.65rem">↗</a></div>';
+    });
+    html += '</div>';
+  }
+  if(fixNamesArr.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">🔤 Renomear ('+fixNamesArr.length+')</div>';
+    fixNamesArr.forEach(function(f){
+      html += '<div class="sync-confirm-row"><span style="text-decoration:line-through;color:var(--text3);font-size:.7rem">'+(f._title||'')+' </span>→ <b>'+escH(f.spot_name)+'</b></div>';
+    });
+    html += '</div>';
+  }
+  if(swapVersions.length){
+    html += '<div class="sync-confirm-section"><div class="sync-confirm-head">🔀 Substituir versão ('+swapVersions.length+')</div>';
+    (_syncDiff.suggest_swap||[]).forEach(function(s){
+      var matched=swapVersions.filter(function(f){return f.idx===s._idx;}); if(!matched.length) return;
+      html += '<div class="sync-confirm-row"><b>'+escH(s.title)+'</b><div style="font-size:.7rem;color:var(--text3)">'+escH(s.cur_artist)+' → '+escH(s.new_artist)+'</div></div>';
+    });
+    html += '</div>';
+  }
+  document.getElementById('syncConfirmBody').innerHTML = html;
+  openModal('syncConfirmModal');
+  $('#syncConfirmOkBtn').off('click').on('click', function(){
+    closeModal('syncConfirmModal');
+    var btn = $('#syncApplyBtn');
+    btn.prop('disabled',true).text('A sincronizar…');
+    doSyncApply(addLocal, removeSpot, addSpotify, fillUrls, swapVersions, btn, fixNamesArr);
+  });
+});
 
-  var btn = $(this);
-  btn.prop('disabled',true).text('A sincronizar…');
-
+function doSyncApply(addLocal, removeSpot, addSpotify, fillUrls, swapVersions, btn, fixNamesArr){
+  fixNamesArr = fixNamesArr||[];
   $.post('?pl='+PL_ID, {
     _action          :'spot_sync_apply',
     pl               :PL_ID,
@@ -4007,7 +4172,8 @@ $('#syncApplyBtn').on('click', function(){
     add_spotify      :JSON.stringify(addSpotify),
     remove_spotify   :JSON.stringify(removeSpot),
     fill_spotify_urls:JSON.stringify(fillUrls),
-    swap_versions    :JSON.stringify(swapVersions)
+    swap_versions    :JSON.stringify(swapVersions),
+    fix_names        :JSON.stringify(fixNamesArr)
   }, function(r){
     btn.prop('disabled',false).text('Aplicar Selecção');
     if(r.ok){
@@ -4028,7 +4194,7 @@ $('#syncApplyBtn').on('click', function(){
     btn.prop('disabled',false).text('Aplicar Selecção');
     $('#syncResult').removeClass('alert-ok').addClass('alert-err').text('Erro de rede.').show();
   });
-});
+}
 
 // ── Import from text ──────────────────────────────────────────
 // ── Import debug helper ───────────────────────────────────────
@@ -4123,7 +4289,7 @@ $(document).on('click', function(e){
 $('#importTextBtnM').on('click', function(){ closeOverflow(); $('#importTextBtn').trigger('click'); });
 $('#mergePlBtnM').on('click', function(){ closeOverflow(); $('#mergePlBtn').trigger('click'); });
 
-$('#syncBtnM').on('click', function(){ closeOverflow(); $('#syncBtn').trigger('click'); });
+$('#syncBtnM').on('click', function(){ closeOverflow(); doOpenSync(); });
 $('#copyListBtnM').on('click', function(){ closeOverflow(); $('#copyListBtn').trigger('click'); });
 
 // ── Utility ────────────────────────────────────────────────────
@@ -4134,6 +4300,14 @@ function escH(s){ return $('<span>').text(s).html(); }
 // ═══════════════════════════════════════════════════════════════
 function getSelectedIndices(){
   return $('.song-check:checked').map(function(){ return parseInt($(this).data('i')); }).get();
+}
+function getSelectedIds(){
+  return $('.song-check:checked').map(function(){ return $(this).data('sid')||String($(this).data('i')); }).get();
+}
+function getSelectedIds(){
+  return $('.song-check:checked').map(function(){
+    return $(this).data('sid')||String($(this).data('i'));
+  }).get();
 }
 
 function updateBulkBar(){
@@ -4167,7 +4341,7 @@ $('#bulkDestSel').on('change', function(){
 });
 
 function bulkAction(action){
-  var indices = getSelectedIndices();
+  var indices = getSelectedIds();
   var destId  = $('#bulkDestSel').val();
   if(!indices.length){ toast('Seleciona pelo menos uma música.'); return; }
   if(!destId){ toast('Escolhe a lista destino.'); $('#bulkDestSel').focus(); return; }
@@ -4257,7 +4431,7 @@ $(function(){
   $('#bulkMoveBtn').on('click', function(){ bulkAction('move'); });
 
   $('#bulkDeleteBtn').on('click', function(){
-    var indices = getSelectedIndices();
+    var indices = getSelectedIds();
     if(!indices.length) return;
     if(!confirm('Excluir ' + indices.length + ' música' + (indices.length===1?'':'s') + ' desta lista?')) return;
     guardedAction(function(){
@@ -4629,6 +4803,22 @@ doImportBackup = function(input){
   reader.readAsText(file);
   input.value = '';
 };
+// ===== POSITION DROPDOWN =====
+$(document).on("change",".pos-select",function(){
+  var $sel=$(this), sid=$sel.data("sid")||"";
+  var newPos=parseInt($sel.val());
+  var $rows=$("#songList tr.song-row");
+  var $row=$sel.closest("tr");
+  var curPos=$rows.index($row)+1;
+  if(newPos===curPos||newPos<1||newPos>$rows.length) return;
+  $row.detach();
+  if(newPos===1) $("#songList").prepend($row);
+  else $rows.not($row).eq(newPos-2).after($row);
+  var ids=$("#songList tr.song-row").map(function(){ return $(this).data("sid")||$(this).data("i"); }).get();
+  showSaving("Salvando…");
+  post({_action:"reorder_songs",order:JSON.stringify(ids)},function(){ showSaving(); hideSaving(); renumber(); });
+});
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(function(){});
 }
