@@ -312,6 +312,40 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'changed'=>$changed]);
     }
 
+    // ── Junta várias músicas selecionadas numa única entrada ──
+    // A primeira da lista (ordem de seleção) fica como base (título/artista/
+    // tom/bpm/ritmo/links); as tags de TODAS as selecionadas são unidas.
+    if($act==='merge_songs'){
+        needAuth();
+        $db      = loadDb();
+        $songIds = json_decode($_POST['song_ids']??'[]', true) ?: [];
+        $songIds = array_values(array_filter($songIds, fn($sid)=>isset($db['songs'][$sid])));
+        if(count($songIds) < 2) jsonOut(['ok'=>false,'error'=>'Seleciona pelo menos 2 músicas para juntar.']);
+
+        $baseId = $songIds[0];
+        $base   = $db['songs'][$baseId];
+
+        // Junta tags de todas as músicas selecionadas (sem duplicar)
+        $mergedTags = $base['tags'] ?? [];
+        foreach($songIds as $sid){
+            foreach(($db['songs'][$sid]['tags'] ?? []) as $tid){
+                if(!in_array($tid,$mergedTags)) $mergedTags[] = $tid;
+            }
+        }
+        $base['tags'] = $mergedTags;
+        $db['songs'][$baseId] = $base;
+
+        // Remove as restantes (mantém só a base)
+        $removed = 0;
+        foreach($songIds as $sid){
+            if($sid===$baseId) continue;
+            unset($db['songs'][$sid]);
+            $removed++;
+        }
+        saveDb($db);
+        jsonOut(['ok'=>true,'base_id'=>$baseId,'removed'=>$removed,'tags_count'=>count($mergedTags)]);
+    }
+
     // ── CRUD de tags ──
     if($act==='add_tag'){
         needAuth();
@@ -1078,8 +1112,24 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   <div class="bulk-actions">
     <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
     <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
+    <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
   </div>
   <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
+</div>
+
+<!-- Merge Songs Modal -->
+<div class="modal-overlay" id="mergeModal">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-title">Juntar músicas selecionadas</div>
+    <div class="modal-body">
+      <div id="mergeErr" class="form-err"></div>
+      <div id="mergePreview" style="font-size:.8rem;color:var(--text2);line-height:1.5"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('mergeModal')">Cancelar</button>
+      <button class="btn btn-primary" onclick="submitMerge()">Juntar</button>
+    </div>
+  </div>
 </div>
 
 <!-- Bulk Add Tags Modal -->
@@ -1350,6 +1400,7 @@ function updateBulkBar(){
   const count = selectedSongIds.size;
   document.getElementById('bulkCount').textContent = count + (count===1 ? ' selecionada' : ' selecionadas');
   bar.classList.toggle('show', count > 0);
+  document.getElementById('mergeBtn').style.display = count >= 2 ? '' : 'none';
 }
 
 function openBulkTagModal(){
@@ -1397,6 +1448,42 @@ function submitBulkRemove(){
       showToast(r.changed + ' música(s) atualizada(s)!');
       loadDbFromServer();
     } else showErr('bulkRemoveErr', r.error || 'Erro.');
+  });
+}
+
+function openMergeModal(){
+  const ids = [...selectedSongIds];
+  if(ids.length < 2) return;
+  const baseId = ids[0];
+  const base = DB.songs[baseId];
+  if(!base) return;
+
+  let html = `<p style="margin-bottom:10px"><strong>${escH(base.title)}</strong> — ${escH(base.artist)} ficará como a entrada principal (mantém título, tom, bpm, ritmo e links).</p>`;
+  html += `<p style="margin-bottom:6px;color:var(--text3);font-size:.75rem">As outras ${ids.length-1} música(s) serão removidas e as suas tags/listas serão adicionadas a esta entrada:</p>`;
+  html += '<ul style="margin:0 0 10px 18px;padding:0">';
+  ids.slice(1).forEach(sid => {
+    const s = DB.songs[sid];
+    if(s) html += `<li>${escH(s.title)} — ${escH(s.artist)}</li>`;
+  });
+  html += '</ul>';
+  document.getElementById('mergePreview').innerHTML = html;
+  document.getElementById('mergeErr').textContent = '';
+  openModal('mergeModal');
+}
+
+function submitMerge(){
+  const ids = [...selectedSongIds];
+  if(ids.length < 2){ showErr('mergeErr','Seleciona pelo menos 2 músicas.'); return; }
+  post({
+    _action: 'merge_songs',
+    song_ids: JSON.stringify(ids)
+  }, function(r){
+    if(r.ok){
+      closeModal('mergeModal');
+      showToast((r.removed) + ' música(s) duplicada(s) removida(s)!');
+      clearSelection();
+      loadDbFromServer();
+    } else showErr('mergeErr', r.error || 'Erro.');
   });
 }
 
