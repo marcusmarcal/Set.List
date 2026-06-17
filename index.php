@@ -355,7 +355,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $spot = trim($_POST['spotify_id']??'');
         if(!$name) jsonOut(['ok'=>false,'error'=>'Nome obrigatório.']);
         $tid = newUuid();
-        $db['tags'][$tid] = ['id'=>$tid,'name'=>$name,'type'=>$type,'spotify_id'=>$spot,'color'=>trim($_POST['color']??'')];
+        $db['tags'][$tid] = [
+            'id'=>$tid,'name'=>$name,'type'=>$type,'spotify_id'=>$spot,'color'=>trim($_POST['color']??''),
+            'event_date'     => trim($_POST['event_date']??''),
+            'event_time'     => trim($_POST['event_time']??''),
+            'event_location' => trim($_POST['event_location']??''),
+        ];
         saveDb($db);
         jsonOut(['ok'=>true,'id'=>$tid,'name'=>$name,'type'=>$type]);
     }
@@ -365,7 +370,9 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $db  = loadDb();
         $tid = trim($_POST['tag_id']??'');
         if(!isset($db['tags'][$tid])) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
-        foreach(['name','type','spotify_id','color'] as $f){ if(isset($_POST[$f])) $db['tags'][$tid][$f]=trim($_POST[$f]); }
+        foreach(['name','type','spotify_id','color','event_date','event_time','event_location'] as $f){
+            if(isset($_POST[$f])) $db['tags'][$tid][$f]=trim($_POST[$f]);
+        }
         saveDb($db);
         jsonOut(['ok'=>true]);
     }
@@ -465,7 +472,8 @@ $totalTags  = count($activeTags);
 $rhythms    = $db['settings']['rhythms'] ?? [];
 $allKeys    = $db['settings']['keys'] ?? [];
 $listTags   = array_values(array_filter($activeTags, fn($t) => ($t['type']??'custom')==='list'));
-$customTags = array_values(array_filter($activeTags, fn($t) => ($t['type']??'custom')!=='list'));
+$eventTags  = array_values(array_filter($activeTags, fn($t) => ($t['type']??'custom')==='event'));
+$customTags = array_values(array_filter($activeTags, fn($t) => !in_array($t['type']??'custom', ['list','event'])));
 
 // Verificar se existe DB original para import
 $canImport = file_exists(__DIR__ . '/playlists.json');
@@ -488,6 +496,7 @@ $canImport = file_exists(__DIR__ . '/playlists.json');
   --purple:#a78bfa;--purple-dim:rgba(167,139,250,.12);
   --blue:#60a5fa;--blue-dim:rgba(96,165,250,.12);
   --orange:#fb923c;--orange-dim:rgba(251,146,60,.12);
+  --gold:#f0c419;--gold-dim:rgba(240,196,25,.12);
   --r:8px;--r2:14px;--tr:.18s cubic-bezier(.4,0,.2,1);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -515,6 +524,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .tag-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0}
 .tag-item.active .tag-dot{background:var(--accent)}
 .tag-dot.type-list{background:var(--accent)}
+.tag-dot.type-event{background:var(--gold)}
 .tag-dot.type-custom{background:var(--purple)}
 .tag-dot.type-musician{background:var(--orange)}
 .tag-count{margin-left:auto;font-family:'DM Mono',monospace;font-size:.58rem;color:var(--text3)}
@@ -584,6 +594,7 @@ tr:hover .td-actions-inner{opacity:1}
 /* ── TAGS chips ── */
 .chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-family:'DM Mono',monospace;font-size:.5rem;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;border:1px solid}
 .chip-list{background:var(--accent-dim);color:var(--accent);border-color:var(--accent-glow)}
+.chip-event{background:var(--gold-dim);color:var(--gold);border-color:rgba(240,196,25,.3)}
 .chip-custom{background:var(--purple-dim);color:var(--purple);border-color:rgba(167,139,250,.3)}
 .chip-musician{background:var(--orange-dim);color:var(--orange);border-color:rgba(251,146,60,.3)}
 .chip-key{background:var(--blue-dim);color:var(--blue);border-color:rgba(96,165,250,.3)}
@@ -871,6 +882,10 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <div class="stat-label">Listas</div>
       </div>
       <div class="stat-card">
+        <div class="stat-num" id="statEvents"><?= count($eventTags) ?></div>
+        <div class="stat-label">Eventos</div>
+      </div>
+      <div class="stat-card">
         <div class="stat-num" id="statCustomTags"><?= count($customTags) ?></div>
         <div class="stat-label">Tags</div>
       </div>
@@ -1009,17 +1024,23 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 <div class="modal-overlay" id="addTagModal">
   <div class="modal">
     <div class="modal-title">Nova Tag / Lista</div>
-    <div class="modal-sub">Tags organizam as músicas. Tipo "lista" representa uma setlist; "músico" para atribuições de instrumentos.</div>
+    <div class="modal-sub">Tags organizam as músicas. Tipo "lista" representa uma setlist; "evento" representa um show com data/hora/local.</div>
     <div class="modal-body">
       <div id="addTagErr"></div>
       <div class="fg"><label class="fl">Nome *</label><input class="fi" id="atName" placeholder="Ex: Renato Guitarra"></div>
       <div class="fg"><label class="fl">Tipo</label>
-        <select class="fi" id="atType">
+        <select class="fi" id="atType" onchange="toggleEventFields('at')">
           <option value="list">📋 Lista / Setlist</option>
+          <option value="event">🎤 Evento (com data/hora/local)</option>
           <option value="musician">🎸 Músico / Instrumento</option>
           <option value="status">📌 Status (ex: aprendendo)</option>
           <option value="custom">🏷️ Personalizada</option>
         </select>
+      </div>
+      <div id="atEventFields" style="display:none">
+        <div class="fg"><label class="fl">Data do Evento</label><input class="fi" type="date" id="atEventDate"></div>
+        <div class="fg"><label class="fl">Hora</label><input class="fi" type="time" id="atEventTime"></div>
+        <div class="fg"><label class="fl">Local</label><input class="fi" id="atEventLocation" placeholder="Ex: Casa de Shows X, Lisboa"></div>
       </div>
       <div class="fg" id="atSpotifyFg"><label class="fl">ID Spotify da Playlist (opcional)</label><input class="fi" id="atSpotify" placeholder="4pcomesNQA6DPXj1HFpOjf"></div>
     </div>
@@ -1052,12 +1073,18 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <input type="hidden" id="etId">
       <div class="fg"><label class="fl">Nome</label><input class="fi" id="etName"></div>
       <div class="fg"><label class="fl">Tipo</label>
-        <select class="fi" id="etType">
+        <select class="fi" id="etType" onchange="toggleEventFields('et')">
           <option value="list">📋 Lista / Setlist</option>
+          <option value="event">🎤 Evento (com data/hora/local)</option>
           <option value="musician">🎸 Músico / Instrumento</option>
           <option value="status">📌 Status</option>
           <option value="custom">🏷️ Personalizada</option>
         </select>
+      </div>
+      <div id="etEventFields" style="display:none">
+        <div class="fg"><label class="fl">Data do Evento</label><input class="fi" type="date" id="etEventDate"></div>
+        <div class="fg"><label class="fl">Hora</label><input class="fi" type="time" id="etEventTime"></div>
+        <div class="fg"><label class="fl">Local</label><input class="fi" id="etEventLocation" placeholder="Ex: Casa de Shows X, Lisboa"></div>
       </div>
       <div class="fg"><label class="fl">ID Spotify (opcional)</label><input class="fi" id="etSpotify"></div>
     </div>
@@ -1271,26 +1298,33 @@ function renderSidebar(){
 
   // Separate by type (tags arquivadas não aparecem na sidebar)
   const activeTags = Object.values(tags).filter(t=>!t.archived);
+  const events = activeTags.filter(t=>t.type==='event');
   const lists = activeTags.filter(t=>t.type==='list');
   const musicians = activeTags.filter(t=>t.type==='musician');
   const statuses = activeTags.filter(t=>t.type==='status');
-  const customs = activeTags.filter(t=>!['list','musician','status'].includes(t.type));
+  const customs = activeTags.filter(t=>!['list','event','musician','status'].includes(t.type));
 
-  function tagSection(label, tagArr, dotClass){
+  function tagSection(label, tagArr, dotClass, isEvent){
     if(!tagArr.length) return '';
     let h = `<div style="font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text3);padding:10px 8px 4px">${label}</div>`;
-    tagArr.forEach(t => {
+    const arr = isEvent ? [...tagArr].sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||'')) : tagArr;
+    arr.forEach(t => {
       const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
       const isAct = activeTagFilter===t.id;
-      h += `<div class="tag-item ${isAct?'active':''}" data-tag="${t.id}" onclick="setTagFilter('${t.id}')">
-        <div class="tag-dot ${dotClass}"></div>
-        <span>${escH(t.name)}</span>
+      const sub = isEvent ? `<div style="font-size:.58rem;color:var(--text3);margin-top:1px">${escH(formatEventDate(t.event_date))}${t.event_location?' · '+escH(t.event_location):''}</div>` : '';
+      h += `<div class="tag-item ${isAct?'active':''}" data-tag="${t.id}" onclick="setTagFilter('${t.id}')" style="${isEvent?'align-items:flex-start;padding:7px 8px':''}">
+        <div class="tag-dot ${dotClass}" style="${isEvent?'margin-top:4px':''}"></div>
+        <div style="flex:1;min-width:0">
+          <span>${escH(t.name)}</span>
+          ${sub}
+        </div>
         <span class="tag-count">${cnt}</span>
       </div>`;
     });
     return h;
   }
 
+  html += tagSection('Eventos', events, 'type-event', true);
   html += tagSection('Listas', lists, 'type-list');
   html += tagSection('Músicos', musicians, 'type-musician');
   html += tagSection('Status', statuses, 'type-custom');
@@ -1380,9 +1414,11 @@ function renderTable(songs){
   songs.forEach((s, i) => {
     const songTags = (s.tags||[]).map(tid => tags[tid]).filter(Boolean);
     const listTags = songTags.filter(t=>t.type==='list');
-    const otherTags = songTags.filter(t=>t.type!=='list');
+    const eventTags = songTags.filter(t=>t.type==='event');
+    const otherTags = songTags.filter(t=>!['list','event'].includes(t.type));
 
     let tagsHtml = '';
+    eventTags.forEach(t => { tagsHtml += `<span class="chip chip-event">🎤 ${escH(t.name)}</span>`; });
     listTags.forEach(t  => { tagsHtml += `<span class="chip chip-list">${escH(t.name)}</span>`; });
     otherTags.forEach(t => {
       const cls = t.type==='musician'?'chip-musician':'chip-custom';
@@ -1524,11 +1560,12 @@ function submitMerge(){
 }
 
 function updateStats(){
-  const songs = Object.values(DB.songs||{});
-  const tags  = Object.values(DB.tags||{});
+  const songs = Object.values(DB.songs||{}).filter(isSongVisible);
+  const tags  = Object.values(DB.tags||{}).filter(t=>!t.archived);
   document.getElementById('statSongs').textContent = songs.length;
   document.getElementById('statTags').textContent  = tags.filter(t=>t.type==='list').length;
-  document.getElementById('statCustomTags').textContent = tags.filter(t=>t.type!=='list').length;
+  document.getElementById('statEvents').textContent = tags.filter(t=>t.type==='event').length;
+  document.getElementById('statCustomTags').textContent = tags.filter(t=>!['list','event'].includes(t.type)).length;
 }
 
 // ── Tags Picker ───────────────────────────────────────────────────
@@ -1661,12 +1698,22 @@ function doDeleteSong(){
 }
 
 // ── Tags ──────────────────────────────────────────────────────────
+function toggleEventFields(prefix){
+  const type = document.getElementById(prefix+'Type').value;
+  document.getElementById(prefix+'EventFields').style.display = (type==='event') ? '' : 'none';
+}
+
 function submitAddTag(){
   const name = document.getElementById('atName').value.trim();
   const type = document.getElementById('atType').value;
   const spot = document.getElementById('atSpotify').value.trim();
   if(!name){ showErr('addTagErr','Nome obrigatório.'); return; }
-  post({ _action:'add_tag', name, type, spotify_id: spot }, function(r){
+  post({
+    _action:'add_tag', name, type, spotify_id: spot,
+    event_date: document.getElementById('atEventDate').value,
+    event_time: document.getElementById('atEventTime').value,
+    event_location: document.getElementById('atEventLocation').value
+  }, function(r){
     if(r.ok){ closeModal('addTagModal'); showToast('Tag criada!'); loadDbFromServer(); }
     else showErr('addTagErr', r.error||'Erro.');
   });
@@ -1687,8 +1734,8 @@ function renderTagManager(){
     el.innerHTML = '<div class="empty-state" style="padding:30px 0"><p>Nenhuma tag ainda.</p></div>';
     return;
   }
-  const typeLabel = { list:'Lista', musician:'Músico', status:'Status', custom:'Tag' };
-  const typeCls   = { list:'chip-list', musician:'chip-musician', status:'chip-custom', custom:'chip-custom' };
+  const typeLabel = { list:'Lista', event:'Evento', musician:'Músico', status:'Status', custom:'Tag' };
+  const typeCls   = { list:'chip-list', event:'chip-event', musician:'chip-musician', status:'chip-custom', custom:'chip-custom' };
   let html = '<div style="display:flex;flex-direction:column;gap:4px">';
   // Tags ativas primeiro, depois arquivadas
   const sorted = Object.values(tags).sort((a,b)=> (a.archived?1:0) - (b.archived?1:0));
@@ -1698,9 +1745,15 @@ function renderTagManager(){
     const archIcon = archived
       ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M10 12h4"/></svg>'
       : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M9 12h6"/></svg>';
+    const eventInfo = (t.type==='event' && (t.event_date||t.event_location))
+      ? `<div style="font-size:.62rem;color:var(--text3);margin-top:1px">${escH(formatEventDate(t.event_date))}${t.event_time?' · '+escH(t.event_time):''}${t.event_location?' · '+escH(t.event_location):''}</div>`
+      : '';
     html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg3);cursor:pointer;${archived?'opacity:.5':''}" onclick="openEditTag('${t.id}')">
       <span class="chip ${typeCls[t.type]||'chip-custom'}">${typeLabel[t.type]||t.type}</span>
-      <span style="flex:1;font-size:.83rem">${escH(t.name)}${archived?' <span style=\"font-size:.6rem;color:var(--text3)\">(arquivada)</span>':''}</span>
+      <div style="flex:1">
+        <div style="font-size:.83rem">${escH(t.name)}${archived?' <span style=\"font-size:.6rem;color:var(--text3)\">(arquivada)</span>':''}</div>
+        ${eventInfo}
+      </div>
       <span style="font-family:'DM Mono',monospace;font-size:.6rem;color:var(--text3)">${cnt} músicas</span>
       <button class="btn btn-ghost" style="padding:4px 7px" title="${archived?'Desarquivar':'Arquivar'}" onclick="event.stopPropagation();toggleArchiveTag('${t.id}')">${archIcon}</button>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="color:var(--text3)"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -1708,6 +1761,13 @@ function renderTagManager(){
   });
   html += '</div>';
   el.innerHTML = html;
+}
+
+function formatEventDate(dateStr){
+  if(!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  if(isNaN(d)) return dateStr;
+  return d.toLocaleDateString('pt-PT', { day:'2-digit', month:'long', year:'numeric' });
 }
 
 function toggleArchiveTag(tid){
@@ -1727,6 +1787,10 @@ function openEditTag(tid){
   document.getElementById('etName').value = t.name || '';
   document.getElementById('etType').value = t.type || 'custom';
   document.getElementById('etSpotify').value = t.spotify_id || '';
+  document.getElementById('etEventDate').value = t.event_date || '';
+  document.getElementById('etEventTime').value = t.event_time || '';
+  document.getElementById('etEventLocation').value = t.event_location || '';
+  toggleEventFields('et');
   closeModal('tagManagerModal');
   document.getElementById('editTagModal').classList.add('open');
 }
@@ -1735,7 +1799,13 @@ function submitEditTag(){
   const tid  = document.getElementById('etId').value;
   const name = document.getElementById('etName').value.trim();
   if(!name){ showErr('editTagErr','Nome obrigatório.'); return; }
-  post({ _action:'edit_tag', tag_id:tid, name, type: document.getElementById('etType').value, spotify_id: document.getElementById('etSpotify').value }, function(r){
+  post({
+    _action:'edit_tag', tag_id:tid, name, type: document.getElementById('etType').value,
+    spotify_id: document.getElementById('etSpotify').value,
+    event_date: document.getElementById('etEventDate').value,
+    event_time: document.getElementById('etEventTime').value,
+    event_location: document.getElementById('etEventLocation').value
+  }, function(r){
     if(r.ok){ closeModal('editTagModal'); showToast('Tag atualizada!'); loadDbFromServer(); setTimeout(renderTagManager, 300); }
     else showErr('editTagErr', r.error||'Erro.');
   });
@@ -1792,8 +1862,11 @@ function openPrintModal(){
   // Populate print tag select
   const tags = DB.tags || {};
   let html = '<option value="">Todas as Músicas</option>';
-  const listTags = Object.values(tags).filter(t=>t.type==='list');
-  const otherTags = Object.values(tags).filter(t=>t.type!=='list');
+  const activeTags = Object.values(tags).filter(t=>!t.archived);
+  const eventTags  = activeTags.filter(t=>t.type==='event').sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||''));
+  const listTags   = activeTags.filter(t=>t.type==='list');
+  const otherTags  = activeTags.filter(t=>!['event','list'].includes(t.type));
+  if(eventTags.length){ html += '<optgroup label="🎤 Eventos">'; eventTags.forEach(t=>{ const d = t.event_date ? ' — '+formatEventDate(t.event_date) : ''; html+=`<option value="${t.id}">${escH(t.name)}${escH(d)}</option>`; }); html+='</optgroup>'; }
   if(listTags.length){ html += '<optgroup label="Listas">'; listTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
   if(otherTags.length){ html += '<optgroup label="Tags">'; otherTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
   document.getElementById('printTagSel').innerHTML = html;
@@ -1811,36 +1884,73 @@ function doPrint(){
   if(tagId) songs = songs.filter(s=>(s.tags||[]).includes(tagId));
   songs.sort((a,b)=>(a.title||'').localeCompare(b.title||'','pt'));
 
-  const listName = tagId ? (tags[tagId]?.name||'Lista') : 'Todas as Músicas';
+  const activeTag = tagId ? tags[tagId] : null;
+  const isEvent   = activeTag && activeTag.type === 'event';
+  const listName  = activeTag ? activeTag.name : 'Todas as Músicas';
 
-  const metaTh = withMeta ? '<th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">Tom</th><th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">Ritmo</th><th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">BPM</th>' : '';
-  const tagsTh  = withTags ? '<th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">Tags</th>' : '';
+  const metaTh = withMeta ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Tom</th><th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Ritmo</th><th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">BPM</th>' : '';
+  const tagsTh  = withTags ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Tags</th>' : '';
 
   let rows = '';
   songs.forEach((s,i)=>{
-    const metaTd = withMeta ? `<td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.key||'')}</td><td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.rhythm||'')}</td><td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.72rem">${s.bpm||''}</td>` : '';
+    const metaTd = withMeta ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.key||'')}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.rhythm||'')}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${s.bpm||''}</td>` : '';
     const tagNames = withTags ? (s.tags||[]).map(tid=>tags[tid]?.name).filter(Boolean).join(', ') : '';
-    const tagsTd  = withTags ? `<td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.68rem;color:#777">${escH(tagNames)}</td>` : '';
+    const tagsTd  = withTags ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.68rem;color:#888">${escH(tagNames)}</td>` : '';
+    const accentClr = isEvent ? '#c9960c' : '#1db954';
     rows += `<tr>
-      <td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.68rem;color:#aaa;text-align:center">${i+1}</td>
-      <td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.82rem;font-weight:500">${escH(s.title)}</td>
-      <td style="padding:5px 8px;border-bottom:1px solid #eee;font-size:.76rem;color:#555">${escH(s.artist)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.7rem;color:#bbb;text-align:center;font-weight:600">${i+1}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.86rem;font-weight:600;color:#1a1a1a">${escH(s.title)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.78rem;color:#666">${escH(s.artist)}</td>
       ${metaTd}${tagsTd}
     </tr>`;
   });
 
+  // ── Cabeçalho ──
+  let header;
+  if(isEvent){
+    // Capa de evento: colorida, elaborada, fundo branco
+    const dateStr = formatEventDate(activeTag.event_date);
+    const dateParts = activeTag.event_date ? activeTag.event_date.split('-') : null;
+    const dayNum = dateParts ? dateParts[2] : '';
+    const monthName = dateStr ? dateStr.split(' ')[2] : '';
+    header = `
+      <div style="background:linear-gradient(135deg,#fffbea 0%,#fff 55%);border:2px solid #f0c419;border-radius:16px;padding:28px 32px;margin-bottom:28px;position:relative;overflow:hidden">
+        <div style="position:absolute;top:-30px;right:-30px;width:140px;height:140px;border-radius:50%;background:radial-gradient(circle,rgba(240,196,25,.25),transparent 70%)"></div>
+        <div style="display:flex;align-items:center;gap:20px;position:relative">
+          ${dayNum ? `
+          <div style="background:#f0c419;border-radius:14px;padding:10px 18px;text-align:center;min-width:78px;box-shadow:0 4px 14px rgba(240,196,25,.35)">
+            <div style="font-size:1.7rem;font-weight:800;color:#1a1a1a;line-height:1;font-family:Georgia,serif">${escH(dayNum)}</div>
+            <div style="font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:#5a4a00;font-weight:700">${escH(monthName)}</div>
+          </div>` : ''}
+          <div style="flex:1">
+            <div style="font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:#c9960c;font-weight:700;margin-bottom:4px">🎤 SETLIST DE EVENTO</div>
+            <h1 style="font-family:Georgia,serif;font-size:1.7rem;color:#1a1a1a;margin-bottom:6px;line-height:1.15">${escH(activeTag.name)}</h1>
+            <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:.76rem;color:#555">
+              ${dateStr ? `<span>📅 ${escH(dateStr)}</span>` : ''}
+              ${activeTag.event_time ? `<span>🕒 ${escH(activeTag.event_time)}</span>` : ''}
+              ${activeTag.event_location ? `<span>📍 ${escH(activeTag.event_location)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:.72rem;color:#999;margin-bottom:14px">${songs.length} músicas no repertório</div>`;
+  } else {
+    header = `
+      <h1 style="font-family:Georgia,serif;font-size:1.4rem;margin-bottom:4px;color:#1a1a1a">${escH(listName)}</h1>
+      <div style="font-size:.72rem;color:#888;margin-bottom:16px">${songs.length} músicas · ${new Date().toLocaleDateString('pt-BR')}</div>`;
+  }
+
   const html = `
     <style>
-      @media print { body { font-family: 'DM Sans', Arial, sans-serif; color: #111; } }
-      body { font-family: 'DM Sans', Arial, sans-serif; }
+      @media print { body { font-family: 'DM Sans', Arial, sans-serif; color: #111; background:#fff; } }
+      body { font-family: 'DM Sans', Arial, sans-serif; background:#fff; padding:8px; }
     </style>
-    <h1 style="font-family:Georgia,serif;font-size:1.4rem;margin-bottom:4px">${escH(listName)}</h1>
-    <div style="font-size:.72rem;color:#888;margin-bottom:16px">${songs.length} músicas · ${new Date().toLocaleDateString('pt-BR')}</div>
+    ${header}
     <table style="width:100%;border-collapse:collapse">
       <thead><tr>
-        <th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:center;width:32px">#</th>
-        <th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">Título</th>
-        <th style="padding:5px 8px;border-bottom:2px solid #ccc;font-size:.68rem;font-weight:600;text-align:left">Artista</th>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:center;width:32px">#</th>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Título</th>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Artista</th>
         ${metaTh}${tagsTh}
       </tr></thead>
       <tbody>${rows}</tbody>
