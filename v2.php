@@ -287,6 +287,31 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'has_tag'=>in_array($tid,$db['songs'][$uuid]['tags'])]);
     }
 
+    // ── Aplica/remove tags em várias músicas de uma vez ──
+    if($act==='bulk_tag'){
+        needAuth();
+        $db       = loadDb();
+        $songIds  = json_decode($_POST['song_ids']??'[]', true) ?: [];
+        $addIds   = json_decode($_POST['add_tags']??'[]', true) ?: [];
+        $removeIds= json_decode($_POST['remove_tags']??'[]', true) ?: [];
+        if(!$songIds) jsonOut(['ok'=>false,'error'=>'Nenhuma música selecionada.']);
+        $changed = 0;
+        foreach($songIds as $sid){
+            if(!isset($db['songs'][$sid])) continue;
+            $tags = $db['songs'][$sid]['tags'] ?? [];
+            foreach($addIds as $tid){
+                if(isset($db['tags'][$tid]) && !in_array($tid,$tags)) $tags[] = $tid;
+            }
+            if($removeIds){
+                $tags = array_values(array_filter($tags, fn($t)=>!in_array($t,$removeIds)));
+            }
+            $db['songs'][$sid]['tags'] = $tags;
+            $changed++;
+        }
+        saveDb($db);
+        jsonOut(['ok'=>true,'changed'=>$changed]);
+    }
+
     // ── CRUD de tags ──
     if($act==='add_tag'){
         needAuth();
@@ -588,6 +613,25 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 .toast.show{transform:translateY(0);opacity:1}
 .toast.err{background:var(--danger);color:#fff}
 
+/* selectable rows */
+table tbody tr.song-row{cursor:pointer;user-select:none}
+table tbody tr.song-row.selected{background:rgba(110,231,183,.08)}
+table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--accent)}
+
+/* bulk action bar */
+.bulk-bar{
+  position:fixed;left:0;right:0;bottom:0;z-index:350;
+  background:var(--bg2);border-top:1px solid var(--border2);
+  padding:10px 16px;display:flex;align-items:center;gap:10px;
+  transform:translateY(100%);transition:transform .25s ease;
+  box-shadow:0 -6px 24px rgba(0,0,0,.35);
+}
+.bulk-bar.show{transform:translateY(0)}
+.bulk-count{font-family:'DM Mono',monospace;font-size:.7rem;color:var(--accent);white-space:nowrap}
+.bulk-actions{display:flex;gap:8px;flex:1;flex-wrap:wrap}
+.bulk-actions .btn{font-size:.7rem;padding:7px 12px}
+.bulk-clear{margin-left:auto;background:none;border:none;color:var(--text3);font-size:.85rem;cursor:pointer;padding:4px 8px}
+
 /* ── MOBILE ── */
 @media (max-width: 768px) {
   /* Layout: sidebar vira menu deslizante no topo */
@@ -658,6 +702,13 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 
   /* Toast */
   .toast{right:12px;bottom:16px;left:12px;text-align:center}
+
+  /* Bulk bar */
+  .bulk-bar{padding:8px 10px;flex-wrap:wrap}
+  .bulk-count{width:100%;text-align:center}
+  .bulk-actions{width:100%;justify-content:center}
+  .bulk-actions .btn{flex:1;min-width:100px}
+  .bulk-clear{position:absolute;top:6px;right:8px}
 }
 </style>
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -1021,6 +1072,52 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Bulk action bar -->
+<div class="bulk-bar" id="bulkBar">
+  <span class="bulk-count" id="bulkCount">0 selecionadas</span>
+  <div class="bulk-actions">
+    <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
+    <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
+  </div>
+  <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
+</div>
+
+<!-- Bulk Add Tags Modal -->
+<div class="modal-overlay" id="bulkAddModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">Adicionar Tag/Lista às músicas selecionadas</div>
+    <div class="modal-body">
+      <div id="bulkAddErr" class="form-err"></div>
+      <div class="fg">
+        <label class="fl">Escolhe uma ou mais tags para adicionar</label>
+        <div id="bulkAddTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('bulkAddModal')">Cancelar</button>
+      <button class="btn btn-primary" onclick="submitBulkAdd()">Adicionar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Remove Tags Modal -->
+<div class="modal-overlay" id="bulkRemoveModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">Remover Tag/Lista das músicas selecionadas</div>
+    <div class="modal-body">
+      <div id="bulkRemoveErr" class="form-err"></div>
+      <div class="fg">
+        <label class="fl">Escolhe uma ou mais tags para remover</label>
+        <div id="bulkRemoveTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('bulkRemoveModal')">Cancelar</button>
+      <button class="btn btn-danger" onclick="submitBulkRemove()">Remover</button>
+    </div>
+  </div>
+</div>
+
 <!-- Print area (hidden, filled before print) -->
 <div id="printArea" style="display:none"></div>
 
@@ -1033,6 +1130,7 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 let DB = { songs: {}, tags: {}, settings: { rhythms: [], keys: [] } };
 let activeTagFilter = '';
 let authed = <?= json_encode(isAuthed()) ?>;
+let selectedSongIds = new Set();
 let canEdit = authed;
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -1210,9 +1308,11 @@ function renderTable(songs){
     const rHtml    = s.rhythm ? `<span class="chip chip-rhythm">${escH(s.rhythm)}</span>` : '';
     const spotHtml = s.spotify_url ? `<a href="${s.spotify_url}" target="_blank" class="spot-link"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>Spotify</a>` : '';
 
-    const editBtn = canEdit ? `<button class="btn btn-ghost" style="padding:4px 7px" onclick="openEditSong('${s.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : '';
+    const editBtn = canEdit ? `<button class="btn btn-ghost" style="padding:4px 7px" onclick="event.stopPropagation();openEditSong('${s.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : '';
 
-    html += `<tr data-id="${s.id}">
+    const isSel = selectedSongIds.has(s.id);
+
+    html += `<tr class="song-row${isSel?' selected':''}" data-id="${s.id}" onclick="toggleSongSelection('${s.id}')">
       <td class="td-num">${i+1}</td>
       <td>
         <div class="td-title">${escH(s.title)}</div>
@@ -1227,6 +1327,77 @@ function renderTable(songs){
     </tr>`;
   });
   tbody.innerHTML = html;
+}
+
+// ── Seleção múltipla & ações em massa ──────────────────────────
+function toggleSongSelection(sid){
+  if(selectedSongIds.has(sid)) selectedSongIds.delete(sid);
+  else selectedSongIds.add(sid);
+  // Atualiza só a linha clicada (evita re-renderizar tudo)
+  const row = document.querySelector(`#songList tr.song-row[data-id="${sid}"]`) || document.querySelector(`tr.song-row[data-id="${sid}"]`);
+  if(row) row.classList.toggle('selected', selectedSongIds.has(sid));
+  updateBulkBar();
+}
+
+function clearSelection(){
+  selectedSongIds.clear();
+  document.querySelectorAll('tr.song-row.selected').forEach(r => r.classList.remove('selected'));
+  updateBulkBar();
+}
+
+function updateBulkBar(){
+  const bar = document.getElementById('bulkBar');
+  const count = selectedSongIds.size;
+  document.getElementById('bulkCount').textContent = count + (count===1 ? ' selecionada' : ' selecionadas');
+  bar.classList.toggle('show', count > 0);
+}
+
+function openBulkTagModal(){
+  if(!selectedSongIds.size) return;
+  renderTagsPicker('bulkAddTagsPicker', []);
+  document.getElementById('bulkAddErr').textContent = '';
+  openModal('bulkAddModal');
+}
+
+function openBulkRemoveModal(){
+  if(!selectedSongIds.size) return;
+  renderTagsPicker('bulkRemoveTagsPicker', []);
+  document.getElementById('bulkRemoveErr').textContent = '';
+  openModal('bulkRemoveModal');
+}
+
+function submitBulkAdd(){
+  const addIds = getSelectedTags('bulkAddTagsPicker');
+  if(!addIds.length){ showErr('bulkAddErr','Escolhe pelo menos uma tag.'); return; }
+  post({
+    _action: 'bulk_tag',
+    song_ids: JSON.stringify([...selectedSongIds]),
+    add_tags: JSON.stringify(addIds),
+    remove_tags: '[]'
+  }, function(r){
+    if(r.ok){
+      closeModal('bulkAddModal');
+      showToast(r.changed + ' música(s) atualizada(s)!');
+      loadDbFromServer();
+    } else showErr('bulkAddErr', r.error || 'Erro.');
+  });
+}
+
+function submitBulkRemove(){
+  const removeIds = getSelectedTags('bulkRemoveTagsPicker');
+  if(!removeIds.length){ showErr('bulkRemoveErr','Escolhe pelo menos uma tag.'); return; }
+  post({
+    _action: 'bulk_tag',
+    song_ids: JSON.stringify([...selectedSongIds]),
+    add_tags: '[]',
+    remove_tags: JSON.stringify(removeIds)
+  }, function(r){
+    if(r.ok){
+      closeModal('bulkRemoveModal');
+      showToast(r.changed + ' música(s) atualizada(s)!');
+      loadDbFromServer();
+    } else showErr('bulkRemoveErr', r.error || 'Erro.');
+  });
 }
 
 function updateStats(){
