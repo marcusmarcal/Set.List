@@ -384,6 +384,17 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true]);
     }
 
+    // ── Arquivar/desarquivar uma tag ──
+    if($act==='toggle_archive_tag'){
+        needAuth();
+        $db  = loadDb();
+        $tid = trim($_POST['tag_id']??'');
+        if(!isset($db['tags'][$tid])) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
+        $db['tags'][$tid]['archived'] = empty($db['tags'][$tid]['archived']);
+        saveDb($db);
+        jsonOut(['ok'=>true,'archived'=>$db['tags'][$tid]['archived']]);
+    }
+
     // ── Ritmos personalizados ──
     if($act==='add_rhythm'){
         needAuth();
@@ -435,13 +446,26 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
 // ── Verificação de DB ─────────────────────────────────────────────
 $db         = loadDb();
 $dbExists   = file_exists($DB_FILE) && count($db['songs']) > 0;
-$totalSongs = count($db['songs']);
-$totalTags  = count($db['tags']);
+$tags       = $db['tags'] ?? [];
+
+// Uma música fica "invisível" quando todas as suas tags estão arquivadas
+function songHasOnlyArchivedTags($song, $tags){
+    $songTagIds = $song['tags'] ?? [];
+    if(!$songTagIds) return false; // sem tags => sempre visível
+    foreach($songTagIds as $tid){
+        if(isset($tags[$tid]) && empty($tags[$tid]['archived'])) return false; // tem 1 ativa
+    }
+    return true; // todas arquivadas
+}
+$visibleSongs = array_filter($db['songs'], fn($s) => !songHasOnlyArchivedTags($s, $tags));
+$activeTags   = array_filter($tags, fn($t) => empty($t['archived']));
+
+$totalSongs = count($visibleSongs);
+$totalTags  = count($activeTags);
 $rhythms    = $db['settings']['rhythms'] ?? [];
 $allKeys    = $db['settings']['keys'] ?? [];
-$tags       = $db['tags'] ?? [];
-$listTags   = array_values(array_filter($tags, fn($t) => ($t['type']??'custom')==='list'));
-$customTags = array_values(array_filter($tags, fn($t) => ($t['type']??'custom')!=='list'));
+$listTags   = array_values(array_filter($activeTags, fn($t) => ($t['type']??'custom')==='list'));
+$customTags = array_values(array_filter($activeTags, fn($t) => ($t['type']??'custom')!=='list'));
 
 // Verificar se existe DB original para import
 $canImport = file_exists(__DIR__ . '/playlists.json');
@@ -1224,9 +1248,20 @@ function renderAll(){
   updateStats();
 }
 
+// Uma música fica escondida da lista geral quando TODAS as suas tags
+// estão arquivadas. Músicas sem tags nenhumas continuam visíveis.
+function isSongVisible(s){
+  const songTagIds = s.tags || [];
+  if(!songTagIds.length) return true;
+  return songTagIds.some(tid => {
+    const t = DB.tags[tid];
+    return t && !t.archived;
+  });
+}
+
 function renderSidebar(){
   const tags = DB.tags || {};
-  const songs = Object.values(DB.songs || {});
+  const songs = Object.values(DB.songs || {}).filter(isSongVisible);
   let html = `
     <div class="tag-item ${activeTagFilter===''?'active':''}" data-tag="" onclick="setTagFilter('')">
       <div class="tag-dot"></div>
@@ -1234,11 +1269,12 @@ function renderSidebar(){
       <span class="tag-count" id="totalCount">${songs.length}</span>
     </div>`;
 
-  // Separate by type
-  const lists = Object.values(tags).filter(t=>t.type==='list');
-  const musicians = Object.values(tags).filter(t=>t.type==='musician');
-  const statuses = Object.values(tags).filter(t=>t.type==='status');
-  const customs = Object.values(tags).filter(t=>!['list','musician','status'].includes(t.type));
+  // Separate by type (tags arquivadas não aparecem na sidebar)
+  const activeTags = Object.values(tags).filter(t=>!t.archived);
+  const lists = activeTags.filter(t=>t.type==='list');
+  const musicians = activeTags.filter(t=>t.type==='musician');
+  const statuses = activeTags.filter(t=>t.type==='status');
+  const customs = activeTags.filter(t=>!['list','musician','status'].includes(t.type));
 
   function tagSection(label, tagArr, dotClass){
     if(!tagArr.length) return '';
@@ -1270,9 +1306,9 @@ function renderFilterDropdowns(){
   const rhythmsInUse = [...new Set(Object.values(DB.songs||{}).map(s=>s.rhythm).filter(Boolean))];
   const keysInUse    = [...new Set(Object.values(DB.songs||{}).map(s=>s.key).filter(Boolean))];
 
-  // Tag filter
+  // Tag filter (tags arquivadas não aparecem)
   let tHtml = '<option value="">Todas as tags</option>';
-  Object.values(tags).forEach(t => {
+  Object.values(tags).filter(t=>!t.archived).forEach(t => {
     tHtml += `<option value="${t.id}">${escH(t.name)}</option>`;
   });
   document.getElementById('filterTag').innerHTML = tHtml;
@@ -1287,9 +1323,9 @@ function renderFilterDropdowns(){
   keysInUse.sort().forEach(k => { kHtml += `<option value="${k}">${escH(k)}</option>`; });
   document.getElementById('filterKey').innerHTML = kHtml;
 
-  // Print tag select
+  // Print tag select (tags arquivadas não aparecem)
   let pHtml = '<option value="">Todas as Músicas</option>';
-  Object.values(tags).forEach(t => { pHtml += `<option value="${t.id}">${escH(t.name)}</option>`; });
+  Object.values(tags).filter(t=>!t.archived).forEach(t => { pHtml += `<option value="${t.id}">${escH(t.name)}</option>`; });
   document.getElementById('printTagSel').innerHTML = pHtml;
 }
 
@@ -1309,7 +1345,7 @@ function applyFilters(){
   const fKey   = document.getElementById('filterKey').value;
   const sortBy = document.getElementById('sortBy').value;
 
-  let songs = Object.values(DB.songs || {});
+  let songs = Object.values(DB.songs || {}).filter(isSongVisible);
 
   // Tag filter (sidebar)
   if(activeTagFilter) songs = songs.filter(s=>(s.tags||[]).includes(activeTagFilter));
@@ -1503,8 +1539,10 @@ function renderTagsPicker(containerId, selectedTags){
   Object.values(tags).forEach(t => {
     const sel = selectedTags.includes(t.id);
     const selCls = t.type==='list'?'sel-list':t.type==='musician'?'sel-musician':'sel-custom';
-    html += `<span class="tp-chip ${sel?selCls:''}" data-tid="${t.id}" onclick="toggleTagChip(this,'${containerId}','${t.type}')">
-      ${escH(t.name)}
+    const archStyle = t.archived ? 'opacity:.45' : '';
+    const archLabel = t.archived ? ' 🗄' : '';
+    html += `<span class="tp-chip ${sel?selCls:''}" style="${archStyle}" data-tid="${t.id}" onclick="toggleTagChip(this,'${containerId}','${t.type}')">
+      ${escH(t.name)}${archLabel}
     </span>`;
   });
   if(!Object.keys(tags).length) html = '<span style="font-size:.75rem;color:var(--text3)">Nenhuma tag criada ainda. <button class="btn btn-ghost" style="padding:2px 6px;font-size:.72rem" onclick="closeModal(\'addSongModal\');openModal(\'addTagModal\')">Criar Tag</button></span>';
@@ -1652,17 +1690,34 @@ function renderTagManager(){
   const typeLabel = { list:'Lista', musician:'Músico', status:'Status', custom:'Tag' };
   const typeCls   = { list:'chip-list', musician:'chip-musician', status:'chip-custom', custom:'chip-custom' };
   let html = '<div style="display:flex;flex-direction:column;gap:4px">';
-  Object.values(tags).forEach(t => {
+  // Tags ativas primeiro, depois arquivadas
+  const sorted = Object.values(tags).sort((a,b)=> (a.archived?1:0) - (b.archived?1:0));
+  sorted.forEach(t => {
     const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
-    html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg3);cursor:pointer" onclick="openEditTag('${t.id}')">
+    const archived = !!t.archived;
+    const archIcon = archived
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M10 12h4"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M9 12h6"/></svg>';
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg3);cursor:pointer;${archived?'opacity:.5':''}" onclick="openEditTag('${t.id}')">
       <span class="chip ${typeCls[t.type]||'chip-custom'}">${typeLabel[t.type]||t.type}</span>
-      <span style="flex:1;font-size:.83rem">${escH(t.name)}</span>
+      <span style="flex:1;font-size:.83rem">${escH(t.name)}${archived?' <span style=\"font-size:.6rem;color:var(--text3)\">(arquivada)</span>':''}</span>
       <span style="font-family:'DM Mono',monospace;font-size:.6rem;color:var(--text3)">${cnt} músicas</span>
+      <button class="btn btn-ghost" style="padding:4px 7px" title="${archived?'Desarquivar':'Arquivar'}" onclick="event.stopPropagation();toggleArchiveTag('${t.id}')">${archIcon}</button>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="color:var(--text3)"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
     </div>`;
   });
   html += '</div>';
   el.innerHTML = html;
+}
+
+function toggleArchiveTag(tid){
+  post({ _action:'toggle_archive_tag', tag_id: tid }, function(r){
+    if(r.ok){
+      showToast(r.archived ? 'Tag arquivada.' : 'Tag desarquivada.');
+      loadDbFromServer();
+      setTimeout(renderTagManager, 300);
+    } else showToast(r.error || 'Erro.', true);
+  });
 }
 
 function openEditTag(tid){
