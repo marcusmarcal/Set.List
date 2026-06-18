@@ -1,4 +1,3 @@
 .env
 .vscode
-vendor
-songs*.json
+v1/songs*.json
