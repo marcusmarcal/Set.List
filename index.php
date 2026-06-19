@@ -25,10 +25,10 @@ function envVal($key) {
     return $c[$key] ?? null;
 }
 
-// ── Auth ─────────────────────────────────────────────────────────
-function adminPwd()  { return envVal('ADMIN_PASSWORD') ?: ''; }
-function isLocked()  { return adminPwd() !== ''; }
-function isAuthed()  { return !isLocked() || !empty($_SESSION['sl_authed']); }
+// ── Auth (desabilitada — acesso aberto) ──────────────────────────
+function adminPwd()  { return ''; }
+function isLocked()  { return false; }
+function isAuthed()  { return true; }
 
 function jsonOut($data) {
     header('Content-Type: application/json; charset=utf-8');
@@ -36,7 +36,7 @@ function jsonOut($data) {
     exit;
 }
 function needAuth() {
-    if (!isAuthed()) jsonOut(['ok' => false, 'error' => 'not_authed']);
+    // Auth desabilitada — sempre autorizado
 }
 
 // ── UUID ─────────────────────────────────────────────────────────
@@ -194,12 +194,9 @@ function fmtMs($ms){
     return $m.':'.str_pad($s,2,'0',STR_PAD_LEFT);
 }
 
-// ── Login ────────────────────────────────────────────────────────
-if(($_POST['_action']??'')==='_login'){
-    if($_POST['password']===adminPwd()){$_SESSION['sl_authed']=true;jsonOut(['ok'=>true]);}
-    jsonOut(['ok'=>false,'error'=>'Senha incorreta.']);
-}
-if(isset($_GET['logout'])){ unset($_SESSION['sl_authed']); header('Location: '.$_SERVER['PHP_SELF']); exit; }
+// ── Login (desabilitado) ─────────────────────────────────────────
+if(($_POST['_action']??'')==='_login'){ jsonOut(['ok'=>true]); }
+if(isset($_GET['logout'])){ header('Location: '.$_SERVER['PHP_SELF']); exit; }
 
 // ── AJAX Actions ────────────────────────────────────────────────
 if($_SERVER['REQUEST_METHOD']==='POST'){
@@ -349,47 +346,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'base_id'=>$baseId,'removed'=>$removed,'tags_count'=>count($mergedTags)]);
     }
 
-    // ── Define a ordem das músicas dentro de um evento ──
-    if($act==='reorder_event_songs'){
-        needAuth();
-        $db   = loadDb();
-        $tid  = trim($_POST['tag_id']??'');
-        $order= json_decode($_POST['song_order']??'[]', true) ?: [];
-        if(!isset($db['tags'][$tid])) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
-        // Mantém só ids válidos (que ainda têm essa tag)
-        $order = array_values(array_filter($order, fn($sid)=>isset($db['songs'][$sid]) && in_array($tid,$db['songs'][$sid]['tags']??[])));
-        $db['tags'][$tid]['song_order'] = $order;
-        saveDb($db);
-        jsonOut(['ok'=>true]);
-    }
-
-    // ── Edita metadados (tom/ritmo/bpm) de várias músicas de uma vez ──
-    // Só os campos efetivamente enviados (não vazios na requisição) são
-    // aplicados; cada um sobrescreve o valor em TODAS as músicas selecionadas.
-    if($act==='bulk_edit_meta'){
-        needAuth();
-        $db      = loadDb();
-        $songIds = json_decode($_POST['song_ids']??'[]', true) ?: [];
-        if(!$songIds) jsonOut(['ok'=>false,'error'=>'Nenhuma música selecionada.']);
-        $fields = [];
-        foreach(['key','rhythm','bpm'] as $f){
-            if(isset($_POST[$f]) && $_POST[$f] !== '__keep__'){ $fields[$f] = trim($_POST[$f]); }
-        }
-        if(!$fields) jsonOut(['ok'=>false,'error'=>'Nenhum campo para alterar.']);
-        $changed = 0;
-        foreach($songIds as $sid){
-            if(!isset($db['songs'][$sid])) continue;
-            foreach($fields as $f=>$v){ $db['songs'][$sid][$f] = $v; }
-            $changed++;
-        }
-        // Se o ritmo enviado for novo, regista nas configurações
-        if(isset($fields['rhythm']) && $fields['rhythm'] !== '' && !in_array($fields['rhythm'], $db['settings']['rhythms']??[])){
-            $db['settings']['rhythms'][] = $fields['rhythm'];
-        }
-        saveDb($db);
-        jsonOut(['ok'=>true,'changed'=>$changed]);
-    }
-
     // ── CRUD de tags ──
     if($act==='add_tag'){
         needAuth();
@@ -491,6 +447,172 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $db['songs'] = (object)($db['songs'] ?: []);
         $db['tags']  = (object)($db['tags'] ?: []);
         jsonOut(['ok'=>true,'db'=>$db]);
+    }
+
+    // ── Guardar ordem de músicas numa tag ────────────────────────
+    if($act==='save_tag_order'){
+        needAuth();
+        $db    = loadDb();
+        $tid   = trim($_POST['tag_id']??'');
+        $order = json_decode($_POST['song_order']??'[]', true) ?: [];
+        if(!isset($db['tags'][$tid])) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
+        $db['tags'][$tid]['song_order'] = array_values(array_filter($order, fn($id)=>isset($db['songs'][$id])));
+        saveDb($db);
+        jsonOut(['ok'=>true,'count'=>count($db['tags'][$tid]['song_order'])]);
+    }
+
+    // ── Importar playlist do Spotify ──────────────────────────────
+    if($act==='import_from_spotify'){
+        needAuth();
+        if(!hasSpotCreds()) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas no .env (CLIENT_ID / CLIENT_SECRET).']);
+
+        $input   = trim($_POST['spotify_input']??'');
+        $tagName = trim($_POST['tag_name']??'');
+        $tagType = trim($_POST['tag_type']??'list'); // 'list' ou 'event'
+
+        // Extrai playlist ID de URL ou ID direto
+        if(preg_match('/playlist\/([A-Za-z0-9]+)/', $input, $m)){
+            $playlistId = $m[1];
+        } elseif(preg_match('/^[A-Za-z0-9]{22}$/', $input)){
+            $playlistId = $input;
+        } else {
+            jsonOut(['ok'=>false,'error'=>'URL ou ID de playlist inválido. Ex: https://open.spotify.com/playlist/4pcomesNQA6DPXj1HFpOjf']);
+        }
+
+        $token = spotToken();
+        if(!$token) jsonOut(['ok'=>false,'error'=>'Não foi possível obter token do Spotify. Verifica as credenciais.']);
+
+        // Busca metadados da playlist
+        $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}?fields=name,description,tracks.total");
+        curl_setopt_array($ch,[
+            CURLOPT_HTTPHEADER     => ["Authorization: Bearer $token"],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 15,
+        ]);
+        $meta = json_decode(curl_exec($ch), true);
+        curl_close($ch);
+
+        if(empty($meta['name'])) jsonOut(['ok'=>false,'error'=>'Playlist não encontrada ou privada (apenas playlists públicas são suportadas).']);
+
+        if(!$tagName) $tagName = $meta['name'];
+
+        // Pagina todas as faixas (máx 100 por pedido)
+        $allTracks = [];
+        $offset = 0;
+        $limit  = 100;
+        do {
+            $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks?limit={$limit}&offset={$offset}&fields=items(track(id,name,artists,duration_ms,external_urls)),next");
+            curl_setopt_array($ch,[
+                CURLOPT_HTTPHEADER     => ["Authorization: Bearer $token"],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_TIMEOUT        => 20,
+            ]);
+            $page = json_decode(curl_exec($ch), true);
+            curl_close($ch);
+            $items = $page['items'] ?? [];
+            foreach($items as $item){
+                $t = $item['track'] ?? null;
+                if(!$t || empty($t['name'])) continue; // episódios/podcast ignorados
+                $allTracks[] = $t;
+            }
+            $offset += $limit;
+        } while(!empty($page['next']) && $offset < 2000);
+
+        if(!$allTracks) jsonOut(['ok'=>false,'error'=>'Playlist vazia ou sem faixas de música.']);
+
+        $db = loadDb();
+
+        // Cria (ou reutiliza) tag para esta playlist
+        $existingTagId = null;
+        foreach($db['tags'] as $tid => $tag){
+            if(($tag['spotify_id']??'') === $playlistId){
+                $existingTagId = $tid;
+                break;
+            }
+        }
+
+        if($existingTagId){
+            $tagId = $existingTagId;
+            // Atualiza nome se mudou
+            $db['tags'][$tagId]['name'] = $tagName;
+        } else {
+            $tagId = newUuid();
+            $db['tags'][$tagId] = [
+                'id'             => $tagId,
+                'name'           => $tagName,
+                'type'           => $tagType,
+                'spotify_id'     => $playlistId,
+                'color'          => '',
+                'event_date'     => '',
+                'event_time'     => '',
+                'event_location' => '',
+            ];
+        }
+
+        // Merge músicas (dedup por título+artista)
+        $songKeyToUuid = [];
+        foreach($db['songs'] as $uuid => $s){
+            $k = strtolower(preg_replace('/[^a-z0-9]/i', '', ($s['title']??'').'||'.($s['artist']??'')));
+            $songKeyToUuid[$k] = $uuid;
+        }
+
+        $added   = 0;
+        $updated = 0;
+        foreach($allTracks as $track){
+            $title  = trim($track['name'] ?? '');
+            $artist = trim(implode(', ', array_column($track['artists']??[], 'name')));
+            if(!$title) continue;
+
+            $normKey = strtolower(preg_replace('/[^a-z0-9]/i', '', $title.'||'.$artist));
+            $spotUrl = $track['external_urls']['spotify'] ?? '';
+            $spotUri = 'spotify:track:'.($track['id']??'');
+            $durMs   = (int)($track['duration_ms'] ?? 0);
+
+            if(isset($songKeyToUuid[$normKey])){
+                $uuid = $songKeyToUuid[$normKey];
+                if(!in_array($tagId, $db['songs'][$uuid]['tags']??[])){
+                    $db['songs'][$uuid]['tags'][] = $tagId;
+                }
+                // Actualiza links Spotify se ainda não tinham
+                if(empty($db['songs'][$uuid]['spotify_url']) && $spotUrl) $db['songs'][$uuid]['spotify_url'] = $spotUrl;
+                if(empty($db['songs'][$uuid]['spotify_uri'])) $db['songs'][$uuid]['spotify_uri'] = $spotUri;
+                if(!$db['songs'][$uuid]['duration_ms'] && $durMs)  $db['songs'][$uuid]['duration_ms'] = $durMs;
+                $updated++;
+            } else {
+                $uuid = newUuid();
+                while(isset($db['songs'][$uuid])) $uuid = newUuid();
+                $db['songs'][$uuid] = [
+                    'id'           => $uuid,
+                    'title'        => $title,
+                    'artist'       => $artist,
+                    'cifra_url'    => 'N/A',
+                    'cifra_source' => 'cifraclub',
+                    'spotify_url'  => $spotUrl,
+                    'spotify_uri'  => $spotUri,
+                    'duration_ms'  => $durMs,
+                    'tags'         => [$tagId],
+                    'key'          => '',
+                    'bpm'          => '',
+                    'rhythm'       => '',
+                    'notes'        => '',
+                ];
+                $songKeyToUuid[$normKey] = $uuid;
+                $added++;
+            }
+        }
+
+        saveDb($db);
+        jsonOut([
+            'ok'         => true,
+            'added'      => $added,
+            'updated'    => $updated,
+            'total'      => count($allTracks),
+            'tag_id'     => $tagId,
+            'tag_name'   => $tagName,
+            'playlist_name' => $meta['name'],
+        ]);
     }
 }
 
@@ -628,18 +750,6 @@ tbody tr:last-child{border-bottom:none}
 tbody tr:hover{background:var(--bg3)}
 tbody td{padding:7px 14px;font-size:.82rem;color:var(--text);vertical-align:middle}
 .td-num{font-family:'DM Mono',monospace;font-size:.6rem;color:var(--text3);width:38px;text-align:center}
-
-/* Event reorder mode */
-tr.event-row{transition:background .12s}
-tr.event-row.dragging{opacity:.35}
-.drag-handle{cursor:grab;color:var(--text3);font-size:.95rem;margin-right:4px;display:inline-block;vertical-align:middle}
-.drag-handle:active{cursor:grabbing}
-.seq-select{
-  background:var(--bg3);border:1px solid var(--border2);color:var(--text);
-  font-family:'DM Mono',monospace;font-size:.65rem;border-radius:5px;
-  padding:2px 4px;width:38px;cursor:pointer;
-}
-.seq-select:focus{outline:1px solid var(--accent)}
 .td-title{font-weight:500}
 .td-artist{color:var(--text2);font-size:.75rem;margin-top:1px}
 .td-meta{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
@@ -723,10 +833,29 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 .import-banner p{font-size:.78rem;color:var(--text2)}
 .import-banner .ib-actions{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
 
-/* ── SPOT LINK ── */
+/* ── DRAG & DROP ORDER ── */
+.drag-handle{cursor:grab;color:var(--text3);padding:0 6px 0 2px;opacity:.4;transition:opacity var(--tr);user-select:none;flex-shrink:0}
+.drag-handle:hover,.song-row:hover .drag-handle{opacity:1}
+.drag-handle:active{cursor:grabbing}
+.song-row.drag-over td{background:var(--accent-dim)!important;border-top:2px solid var(--accent)}
+.song-row.dragging{opacity:.35}
+.pos-select{width:44px;padding:2px 2px 2px 4px;border:1px solid var(--border2);border-radius:4px;background:var(--bg2);color:var(--text1);font-size:.72rem;font-family:'DM Mono',monospace;cursor:pointer;text-align:center}
+.pos-select:focus{outline:none;border-color:var(--accent)}
+.order-mode-bar{display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--accent-dim);border:1px solid var(--accent-glow);border-radius:var(--r);margin-bottom:10px;font-size:.76rem;color:var(--accent)}
+.order-mode-bar.show{display:flex}
+.order-mode-bar svg{width:13px;height:13px;flex-shrink:0}
+td.td-drag{width:24px;padding:0 0 0 8px}
 .spot-link{display:inline-flex;align-items:center;gap:3px;color:#1db954;font-size:.58rem;font-family:'DM Mono',monospace;text-decoration:none;padding:2px 5px;border-radius:4px;border:1px solid rgba(29,185,84,.3);transition:all var(--tr)}
 .spot-link:hover{background:rgba(29,185,84,.12)}
 .spot-link svg{width:8px;height:8px}
+
+/* ── SPOTIFY IMPORT ── */
+.spot-import-result{border-radius:var(--r);padding:12px 14px;font-size:.8rem;margin-top:14px}
+.spot-import-result.ok{background:var(--accent-dim);border:1px solid var(--accent-glow);color:var(--accent)}
+.spot-import-result.err{background:var(--danger-dim);border:1px solid rgba(224,82,82,.3);color:#f88}
+.spot-progress{display:flex;align-items:center;gap:8px;font-family:'DM Mono',monospace;font-size:.66rem;color:var(--text3);margin-top:10px}
+.spot-spinner{width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* scrollbar */
 ::-webkit-scrollbar{width:5px;height:5px}
@@ -867,6 +996,12 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       Imprimir Lista
     </button>
     <?php if(isAuthed()): ?>
+    <button class="sb-btn" onclick="openModal('spotifyImportModal')" style="color:#1db954;border-color:rgba(29,185,84,.3)">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+      Importar do Spotify
+    </button>
+    <?php endif; ?>
+    <?php if(isAuthed()): ?>
     <button class="sb-btn" onclick="openModal('tagManagerModal')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
       Gerir Tags
@@ -902,6 +1037,10 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         Importar JSONs
       </button>
       <?php endif; ?>
+      <button class="btn btn-outline no-print" onclick="copyListToClipboard()" title="Copiar lista visível para o clipboard em texto plano">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        Copiar Lista
+      </button>
     </div>
   </div>
 
@@ -955,7 +1094,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     <div class="filters-bar no-print">
       <div class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" class="search-input" id="searchInput" placeholder="Buscar por título, artista ou notas…" oninput="applyFilters()">
+        <input type="text" class="search-input" id="searchInput" placeholder="Buscar por título ou artista…" oninput="applyFilters()">
       </div>
       <select class="filter-select" id="filterTag" onchange="applyFilters()">
         <option value="">Todas as tags</option>
@@ -972,9 +1111,13 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <option value="key">Tonalidade</option>
         <option value="rhythm">Ritmo</option>
       </select>
-      <?php if(isAuthed()): ?>
-      <button class="btn btn-ghost" id="selectAllBtn" onclick="toggleSelectAll()">☐ Selecionar Todas</button>
-      <?php endif; ?>
+    </div>
+
+    <!-- ORDER MODE BAR -->
+    <div class="order-mode-bar" id="orderModeBar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Modo de ordenação activo — arrasta as linhas ou usa o número para reposicionar. A ordem é guardada automaticamente.
+      <button class="btn btn-ghost" style="margin-left:auto;padding:2px 8px;font-size:.7rem" onclick="clearTagOrder()">Resetar ordem</button>
     </div>
 
     <!-- TABLE -->
@@ -982,6 +1125,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <table id="songTable">
         <thead>
           <tr>
+            <th class="td-drag no-print" id="thDrag" style="display:none"></th>
             <th class="td-num">#</th>
             <th>Título / Artista</th>
             <th>Tags</th>
@@ -1181,12 +1325,8 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         </select>
       </div>
       <div class="fg" style="display:flex;align-items:center;gap:10px">
-        <input type="checkbox" id="printWithTags" style="width:16px;height:16px;accent-color:var(--accent)" onchange="togglePrintTagsPicker()">
-        <label for="printWithTags" style="font-size:.82rem;cursor:pointer">Mostrar tags de cada música</label>
-      </div>
-      <div id="printTagsPickerWrap" style="display:none;margin:-6px 0 4px 26px">
-        <div style="font-size:.7rem;color:var(--text3);margin-bottom:6px">Escolhe quais tags podem aparecer na impressão:</div>
-        <div id="printTagsPicker" style="display:flex;flex-direction:column;gap:5px;max-height:160px;overflow-y:auto;padding:2px"></div>
+        <input type="checkbox" id="printWithTags" style="width:16px;height:16px;accent-color:var(--accent)">
+        <label for="printWithTags" style="font-size:.82rem;cursor:pointer">Mostrar todas as tags de cada música</label>
       </div>
       <div class="fg" style="display:flex;align-items:center;gap:10px">
         <input type="checkbox" id="printWithMeta" checked style="width:16px;height:16px;accent-color:var(--accent)">
@@ -1218,6 +1358,48 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 <?php endif; ?>
 
 <!-- Toast -->
+<!-- Spotify Import Modal -->
+<div class="modal-overlay" id="spotifyImportModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title" style="display:flex;align-items:center;gap:10px">
+      <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+      Importar Playlist do Spotify
+    </div>
+    <div class="modal-sub">Cola o link ou ID de uma playlist pública do Spotify. As músicas serão adicionadas ao catálogo e associadas a uma tag/lista.</div>
+    <div class="modal-body">
+      <div id="spotifyImportResult"></div>
+      <div class="fg">
+        <label class="fl">URL ou ID da Playlist *</label>
+        <input class="fi" id="siInput" placeholder="https://open.spotify.com/playlist/… ou ID direto">
+        <div style="font-size:.65rem;color:var(--text3);margin-top:5px">Exemplo: <code style="background:var(--bg3);padding:1px 5px;border-radius:3px">https://open.spotify.com/playlist/4pcomesNQA6DPXj1HFpOjf</code></div>
+      </div>
+      <div class="fg">
+        <label class="fl">Nome da Tag/Lista (opcional — usa o nome da playlist se vazio)</label>
+        <input class="fi" id="siTagName" placeholder="Ex: Setlist Verão 2026">
+      </div>
+      <div class="fg">
+        <label class="fl">Tipo de tag</label>
+        <select class="fi" id="siTagType">
+          <option value="list">📋 Lista / Setlist</option>
+          <option value="event">🎤 Evento</option>
+          <option value="custom">🏷️ Personalizada</option>
+        </select>
+      </div>
+      <div id="siProgress" style="display:none" class="spot-progress">
+        <div class="spot-spinner"></div>
+        <span>A importar do Spotify…</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('spotifyImportModal')">Cancelar</button>
+      <button class="btn btn-primary" id="siBtnImport" onclick="submitSpotifyImport()" style="background:#1db954;border-color:#1db954;color:#000">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Importar
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Bulk action bar -->
@@ -1226,7 +1408,6 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   <div class="bulk-actions">
     <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
     <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
-    <button class="btn btn-ghost" onclick="openBulkMetaModal()">♪ Editar Tom/Ritmo/BPM</button>
     <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
   </div>
   <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
@@ -1283,42 +1464,6 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   </div>
 </div>
 
-<!-- Bulk Edit Metadata Modal -->
-<div class="modal-overlay" id="bulkMetaModal">
-  <div class="modal" style="max-width:420px">
-    <div class="modal-title">Editar Tom / Ritmo / BPM em lote</div>
-    <div class="modal-sub">Só os campos marcados com "Alterar" serão aplicados a todas as músicas selecionadas. Os demais ficam como estão.</div>
-    <div class="modal-body">
-      <div id="bulkMetaErr" class="form-err"></div>
-      <div class="fg" style="display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="bmKeyChk" onchange="document.getElementById('bmKey').disabled=!this.checked">
-        <label class="fl" style="margin:0;flex:1">Tonalidade</label>
-        <select class="fi" id="bmKey" style="flex:1" disabled>
-          <option value="">—</option>
-          <?php foreach($allKeys as $k): ?><option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($k) ?></option><?php endforeach; ?>
-        </select>
-      </div>
-      <div class="fg" style="display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="bmRhythmChk" onchange="document.getElementById('bmRhythm').disabled=!this.checked">
-        <label class="fl" style="margin:0;flex:1">Ritmo</label>
-        <select class="fi" id="bmRhythm" style="flex:1" disabled>
-          <option value="">—</option>
-          <?php foreach($rhythms as $r): ?><option value="<?= htmlspecialchars($r) ?>"><?= htmlspecialchars($r) ?></option><?php endforeach; ?>
-        </select>
-      </div>
-      <div class="fg" style="display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="bmBpmChk" onchange="document.getElementById('bmBpm').disabled=!this.checked">
-        <label class="fl" style="margin:0;flex:1">BPM</label>
-        <input class="fi" id="bmBpm" type="number" style="flex:1" disabled placeholder="Ex: 120">
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('bulkMetaModal')">Cancelar</button>
-      <button class="btn btn-primary" onclick="submitBulkMeta()">Aplicar</button>
-    </div>
-  </div>
-</div>
-
 <!-- Print area (hidden, filled before print) -->
 <div id="printArea" style="display:none"></div>
 
@@ -1333,8 +1478,6 @@ let activeTagFilter = '';
 let authed = <?= json_encode(isAuthed()) ?>;
 let selectedSongIds = new Set();
 let canEdit = authed;
-let currentVisibleIds = [];
-const SCRIPT_URL = window.location.pathname;
 
 // ── Init ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function(){
@@ -1474,11 +1617,6 @@ function setTagFilter(tid){
   document.getElementById('currentViewTitle').textContent = title;
 }
 
-function isEventFilterActive(){
-  const t = activeTagFilter ? DB.tags[activeTagFilter] : null;
-  return t && t.type === 'event';
-}
-
 function applyFilters(){
   const q      = document.getElementById('searchInput').value.toLowerCase().trim();
   const fTag   = document.getElementById('filterTag').value;
@@ -1495,23 +1633,24 @@ function applyFilters(){
   if(fTag)    songs = songs.filter(s=>(s.tags||[]).includes(fTag));
   if(fRhythm) songs = songs.filter(s=>s.rhythm===fRhythm);
   if(fKey)    songs = songs.filter(s=>s.key===fKey);
-  if(q)       songs = songs.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q)||(s.notes||'').toLowerCase().includes(q));
+  if(q)       songs = songs.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q));
 
-  const eventMode = isEventFilterActive() && !q && !fTag && !fRhythm && !fKey;
+  // Se estamos numa tag com ordem personalizada e não há filtros adicionais, usa essa ordem
+  const activeTag = activeTagFilter ? DB.tags[activeTagFilter] : null;
+  const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
+  const hasExtraFilters = !!(fTag || fRhythm || fKey || q);
+  const isOrderMode = hasCustomOrder && !hasExtraFilters;
 
-  if(eventMode){
-    // Ordem definida manualmente para o evento (sequência do concerto)
-    const evTag = DB.tags[activeTagFilter];
-    const order = evTag.song_order || [];
-    songs.sort((a,b)=>{
-      const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
-      if(ia===-1 && ib===-1) return (a.title||'').localeCompare(b.title||'','pt');
-      if(ia===-1) return 1;
-      if(ib===-1) return -1;
-      return ia - ib;
+  if(isOrderMode){
+    const orderMap = {};
+    (activeTag.song_order||[]).forEach((id, i) => { orderMap[id] = i; });
+    songs.sort((a, b) => {
+      const ia = orderMap[a.id] !== undefined ? orderMap[a.id] : 99999;
+      const ib = orderMap[b.id] !== undefined ? orderMap[b.id] : 99999;
+      if(ia !== ib) return ia - ib;
+      return (a.title||'').localeCompare(b.title||'', 'pt');
     });
   } else {
-    // Sort alfabético normal
     songs.sort((a,b)=>{
       const va=(a[sortBy]||a.title||'').toLowerCase();
       const vb=(b[sortBy]||b.title||'').toLowerCase();
@@ -1519,31 +1658,35 @@ function applyFilters(){
     });
   }
 
-  renderTable(songs, eventMode);
-  currentVisibleIds = songs.map(s=>s.id);
+  // Mostra/esconde barra e coluna de drag
+  const canOrder = !!activeTag && canEdit && !hasExtraFilters;
+  document.getElementById('orderModeBar').classList.toggle('show', canOrder && isOrderMode);
+  document.getElementById('thDrag').style.display = canOrder ? '' : 'none';
+
+  renderTable(songs, canOrder);
   document.getElementById('statVisible').textContent = songs.length;
   document.getElementById('currentViewSub').textContent = songs.length + ' músicas' + (activeTagFilter ? ' nesta lista' : ' no catálogo');
-  updateSelectAllBtn();
 }
 
-function renderTable(songs, eventMode){
+function renderTable(songs, canOrder){
   const tags = DB.tags || {};
   const tbody = document.getElementById('songBody');
   if(!songs.length){
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="em-icon">🎵</div><h3>Nenhuma música encontrada</h3><p>Ajusta os filtros ou adiciona novas músicas ao catálogo.</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="em-icon">🎵</div><h3>Nenhuma música encontrada</h3><p>Ajusta os filtros ou adiciona novas músicas ao catálogo.</p></div></td></tr>`;
     return;
   }
 
+  const total = songs.length;
   let html = '';
   songs.forEach((s, i) => {
     const songTags = (s.tags||[]).map(tid => tags[tid]).filter(Boolean);
-    const listTags = songTags.filter(t=>t.type==='list');
-    const eventTags = songTags.filter(t=>t.type==='event');
+    const listTagsArr = songTags.filter(t=>t.type==='list');
+    const eventTagsArr = songTags.filter(t=>t.type==='event');
     const otherTags = songTags.filter(t=>!['list','event'].includes(t.type));
 
     let tagsHtml = '';
-    eventTags.forEach(t => { tagsHtml += `<span class="chip chip-event">🎤 ${escH(t.name)}</span>`; });
-    listTags.forEach(t  => { tagsHtml += `<span class="chip chip-list">${escH(t.name)}</span>`; });
+    eventTagsArr.forEach(t => { tagsHtml += `<span class="chip chip-event">🎤 ${escH(t.name)}</span>`; });
+    listTagsArr.forEach(t  => { tagsHtml += `<span class="chip chip-list">${escH(t.name)}</span>`; });
     otherTags.forEach(t => {
       const cls = t.type==='musician'?'chip-musician':'chip-custom';
       tagsHtml += `<span class="chip ${cls}">${escH(t.name)}</span>`;
@@ -1553,26 +1696,30 @@ function renderTable(songs, eventMode){
     const bpmHtml  = s.bpm    ? `<span class="chip chip-bpm">${escH(s.bpm)} bpm</span>` : '';
     const rHtml    = s.rhythm ? `<span class="chip chip-rhythm">${escH(s.rhythm)}</span>` : '';
     const spotHtml = s.spotify_url ? `<a href="${s.spotify_url}" target="_blank" class="spot-link"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>Spotify</a>` : '';
-
     const editBtn = canEdit ? `<button class="btn btn-ghost" style="padding:4px 7px" onclick="event.stopPropagation();openEditSong('${s.id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : '';
 
-    const isSel = selectedSongIds.has(s.id);
-
-    let numCell;
-    if(eventMode && canEdit){
+    // Drag handle + position dropdown (só em modo de ordenação)
+    let dragTd = '<td class="td-drag no-print" style="display:none"></td>';
+    let numCell = `<td class="td-num">${i+1}</td>`;
+    if(canOrder){
+      // Dropdown de posições
       let opts = '';
-      for(let p=1; p<=songs.length; p++){
-        opts += `<option value="${p}" ${p===i+1?'selected':''}>${p}</option>`;
-      }
-      numCell = `<select class="seq-select" data-id="${s.id}" onclick="event.stopPropagation()" onchange="setSongPosition('${s.id}', this.value)">${opts}</select>`;
-    } else {
-      numCell = i+1;
+      for(let p = 1; p <= total; p++) opts += `<option value="${p}"${p===i+1?' selected':''}>${p}</option>`;
+      dragTd = `<td class="td-drag no-print">
+        <div style="display:flex;align-items:center;gap:3px">
+          <span class="drag-handle" draggable="true" title="Arrastar para reordenar">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 6a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm8-16a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4zm0 8a2 2 0 100-4 2 2 0 000 4z"/></svg>
+          </span>
+          <select class="pos-select" onchange="event.stopPropagation();moveToPosition('${s.id}',this.value,this)">${opts}</select>
+        </div>
+      </td>`;
+      numCell = `<td class="td-num" style="color:var(--text3)">${i+1}</td>`;
     }
 
-    const dragHandle = (eventMode && canEdit) ? `<span class="drag-handle" draggable="true" title="Arrastar para reordenar">⠿</span>` : '';
-
-    html += `<tr class="song-row${isSel?' selected':''}${eventMode?' event-row':''}" data-id="${s.id}" draggable="${eventMode && canEdit ? 'true':'false'}" onclick="toggleSongSelection('${s.id}')">
-      <td class="td-num">${dragHandle}${numCell}</td>
+    const isSel = selectedSongIds.has(s.id);
+    html += `<tr class="song-row${isSel?' selected':''}" data-id="${s.id}" onclick="toggleSongSelection('${s.id}')">
+      ${dragTd}
+      ${numCell}
       <td>
         <div class="td-title">${escH(s.title)}</div>
         <div class="td-artist">${escH(s.artist)}</div>
@@ -1587,62 +1734,127 @@ function renderTable(songs, eventMode){
   });
   tbody.innerHTML = html;
 
-  if(eventMode && canEdit) attachDragReorder();
+  if(canOrder) initDragDrop();
 }
 
-// ── Drag & drop para reordenar músicas de um evento ─────────────
-function attachDragReorder(){
-  const tbody = document.getElementById('songBody');
-  let dragEl = null;
+// ── Ordenação por drag-and-drop e dropdown ────────────────────────
+let _dragSrc = null;
+let _saveOrderTimer = null;
 
-  tbody.querySelectorAll('tr.event-row').forEach(row => {
-    row.addEventListener('dragstart', function(e){
-      dragEl = row;
+function initDragDrop(){
+  const rows = document.querySelectorAll('#songBody tr.song-row');
+  rows.forEach(row => {
+    const handle = row.querySelector('.drag-handle');
+    if(!handle) return;
+
+    handle.addEventListener('mousedown', () => { row.setAttribute('draggable', 'true'); });
+    handle.addEventListener('mouseup',   () => { row.setAttribute('draggable', 'false'); });
+
+    row.addEventListener('dragstart', e => {
+      _dragSrc = row;
       row.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', row.dataset.id);
     });
-    row.addEventListener('dragend', function(){
+    row.addEventListener('dragend', () => {
       row.classList.remove('dragging');
-      dragEl = null;
-      commitEventOrderFromDOM();
+      document.querySelectorAll('#songBody tr.drag-over').forEach(r => r.classList.remove('drag-over'));
+      row.setAttribute('draggable', 'false');
     });
-    row.addEventListener('dragover', function(e){
+    row.addEventListener('dragover', e => {
       e.preventDefault();
-      if(!dragEl || dragEl===row) return;
-      const rect = row.getBoundingClientRect();
-      const before = (e.clientY - rect.top) < rect.height/2;
-      row.parentNode.insertBefore(dragEl, before ? row : row.nextSibling);
+      e.dataTransfer.dropEffect = 'move';
+      if(row !== _dragSrc){
+        document.querySelectorAll('#songBody tr.drag-over').forEach(r => r.classList.remove('drag-over'));
+        row.classList.add('drag-over');
+      }
+    });
+    row.addEventListener('dragleave', () => { row.classList.remove('drag-over'); });
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      if(!_dragSrc || _dragSrc === row) return;
+      const tbody = document.getElementById('songBody');
+      const rows  = [...tbody.querySelectorAll('tr.song-row')];
+      const srcIdx = rows.indexOf(_dragSrc);
+      const dstIdx = rows.indexOf(row);
+      if(srcIdx < dstIdx) tbody.insertBefore(_dragSrc, row.nextSibling);
+      else                tbody.insertBefore(_dragSrc, row);
+      _dragSrc = null;
+      _commitOrderFromDOM();
     });
   });
 }
 
-function commitEventOrderFromDOM(){
-  if(!isEventFilterActive()) return;
-  const ids = [...document.querySelectorAll('#songBody tr.event-row')].map(r=>r.dataset.id);
-  saveEventOrder(ids);
-  // Atualiza números na tela sem re-fetch
-  applyFilters();
+function moveToPosition(songId, newPos, selectEl){
+  event.stopPropagation();
+  const pos   = parseInt(newPos) - 1;
+  const tbody = document.getElementById('songBody');
+  const rows  = [...tbody.querySelectorAll('tr.song-row')];
+  const srcRow = rows.find(r => r.dataset.id === songId);
+  if(!srcRow) return;
+  const target = rows[pos];
+  if(target === srcRow) return;
+  const srcIdx = rows.indexOf(srcRow);
+  if(pos > srcIdx) tbody.insertBefore(srcRow, target ? target.nextSibling : null);
+  else             tbody.insertBefore(srcRow, target);
+  _commitOrderFromDOM();
 }
 
-function setSongPosition(songId, newPosStr){
-  if(!isEventFilterActive()) return;
-  const newPos = parseInt(newPosStr,10) - 1;
-  const rows = [...document.querySelectorAll('#songBody tr.event-row')];
-  let ids = rows.map(r=>r.dataset.id);
-  const oldPos = ids.indexOf(songId);
-  if(oldPos===-1) return;
-  ids.splice(oldPos,1);
-  ids.splice(newPos,0,songId);
-  saveEventOrder(ids);
+function _commitOrderFromDOM(){
+  // Actualiza números visíveis e dropdowns
+  const tbody = document.getElementById('songBody');
+  const rows  = [...tbody.querySelectorAll('tr.song-row')];
+  const total = rows.length;
+  const newOrder = rows.map((r, i) => {
+    // Atualiza número
+    const numTd = r.querySelector('td.td-num');
+    if(numTd) numTd.textContent = i + 1;
+    // Atualiza dropdown
+    const sel = r.querySelector('select.pos-select');
+    if(sel){
+      let opts = '';
+      for(let p = 1; p <= total; p++) opts += `<option value="${p}"${p===i+1?' selected':''}>${p}</option>`;
+      sel.innerHTML = opts;
+    }
+    return r.dataset.id;
+  });
+
+  // Actualiza DB local imediatamente
+  if(activeTagFilter && DB.tags[activeTagFilter]){
+    DB.tags[activeTagFilter].song_order = newOrder;
+    document.getElementById('orderModeBar').classList.add('show');
+  }
+
+  // Debounce: guarda no servidor 600ms após último movimento
+  clearTimeout(_saveOrderTimer);
+  _saveOrderTimer = setTimeout(() => saveTagOrder(newOrder), 600);
 }
 
-function saveEventOrder(ids){
-  const evTag = DB.tags[activeTagFilter];
-  if(!evTag) return;
-  evTag.song_order = ids; // atualização otimista local
-  post({ _action:'reorder_event_songs', tag_id: activeTagFilter, song_order: JSON.stringify(ids) }, function(r){
-    if(r.ok){ applyFilters(); }
-    else { showToast(r.error||'Erro ao reordenar.', true); loadDbFromServer(); }
+function saveTagOrder(order){
+  if(!activeTagFilter) return;
+  showSaving();
+  post({
+    _action: 'save_tag_order',
+    tag_id: activeTagFilter,
+    song_order: JSON.stringify(order)
+  }, function(r){
+    hideSaving();
+    if(!r.ok) showToast('Erro ao guardar ordem.', true);
+  });
+}
+
+function clearTagOrder(){
+  if(!activeTagFilter) return;
+  if(!confirm('Resetar a ordem personalizada desta lista? As músicas voltarão à ordem alfabética.')) return;
+  DB.tags[activeTagFilter].song_order = [];
+  post({
+    _action: 'save_tag_order',
+    tag_id: activeTagFilter,
+    song_order: '[]'
+  }, function(r){
+    if(r.ok){ showToast('Ordem resetada.'); applyFilters(); }
+    else showToast('Erro ao resetar.', true);
   });
 }
 
@@ -1662,33 +1874,12 @@ function clearSelection(){
   updateBulkBar();
 }
 
-function toggleSelectAll(){
-  const allSelected = currentVisibleIds.length > 0 && currentVisibleIds.every(id=>selectedSongIds.has(id));
-  if(allSelected){
-    currentVisibleIds.forEach(id=>selectedSongIds.delete(id));
-  } else {
-    currentVisibleIds.forEach(id=>selectedSongIds.add(id));
-  }
-  document.querySelectorAll('#songBody tr.song-row').forEach(r=>{
-    r.classList.toggle('selected', selectedSongIds.has(r.dataset.id));
-  });
-  updateBulkBar();
-}
-
-function updateSelectAllBtn(){
-  const btn = document.getElementById('selectAllBtn');
-  if(!btn) return;
-  const allSelected = currentVisibleIds.length > 0 && currentVisibleIds.every(id=>selectedSongIds.has(id));
-  btn.textContent = allSelected ? '☑ Desmarcar Todas' : '☐ Selecionar Todas';
-}
-
 function updateBulkBar(){
   const bar = document.getElementById('bulkBar');
   const count = selectedSongIds.size;
   document.getElementById('bulkCount').textContent = count + (count===1 ? ' selecionada' : ' selecionadas');
   bar.classList.toggle('show', count > 0);
   document.getElementById('mergeBtn').style.display = count >= 2 ? '' : 'none';
-  updateSelectAllBtn();
 }
 
 function openBulkTagModal(){
@@ -1736,37 +1927,6 @@ function submitBulkRemove(){
       showToast(r.changed + ' música(s) atualizada(s)!');
       loadDbFromServer();
     } else showErr('bulkRemoveErr', r.error || 'Erro.');
-  });
-}
-
-function openBulkMetaModal(){
-  if(!selectedSongIds.size) return;
-  ['bmKeyChk','bmRhythmChk','bmBpmChk'].forEach(id=>document.getElementById(id).checked=false);
-  ['bmKey','bmRhythm','bmBpm'].forEach(id=>document.getElementById(id).disabled=true);
-  document.getElementById('bmKey').value='';
-  document.getElementById('bmRhythm').value='';
-  document.getElementById('bmBpm').value='';
-  document.getElementById('bulkMetaErr').textContent = '';
-  openModal('bulkMetaModal');
-}
-
-function submitBulkMeta(){
-  const useKey    = document.getElementById('bmKeyChk').checked;
-  const useRhythm = document.getElementById('bmRhythmChk').checked;
-  const useBpm    = document.getElementById('bmBpmChk').checked;
-  if(!useKey && !useRhythm && !useBpm){ showErr('bulkMetaErr','Marca pelo menos um campo para alterar.'); return; }
-  post({
-    _action: 'bulk_edit_meta',
-    song_ids: JSON.stringify([...selectedSongIds]),
-    key:    useKey    ? document.getElementById('bmKey').value    : '__keep__',
-    rhythm: useRhythm ? document.getElementById('bmRhythm').value : '__keep__',
-    bpm:    useBpm    ? document.getElementById('bmBpm').value    : '__keep__'
-  }, function(r){
-    if(r.ok){
-      closeModal('bulkMetaModal');
-      showToast(r.changed + ' música(s) atualizada(s)!');
-      loadDbFromServer();
-    } else showErr('bulkMetaErr', r.error || 'Erro.');
   });
 }
 
@@ -1851,6 +2011,15 @@ function getSelectedTags(containerId){
 function openModal(id){
   // Populate rhythm selects dynamically
   if(id==='addSongModal'){ renderTagsPicker('asTagsPicker',[]); populateRhythmSelects(); }
+  // Reset spotify import modal
+  if(id==='spotifyImportModal'){
+    document.getElementById('siInput').value = '';
+    document.getElementById('siTagName').value = '';
+    document.getElementById('siTagType').value = 'list';
+    document.getElementById('spotifyImportResult').innerHTML = '';
+    document.getElementById('siProgress').style.display = 'none';
+    document.getElementById('siBtnImport').disabled = false;
+  }
   document.getElementById(id).classList.add('open');
   setTimeout(()=>{ const f=document.querySelector(`#${id} input.fi`); if(f) f.focus(); },150);
 }
@@ -2089,6 +2258,133 @@ function submitAddRhythm(){
   });
 }
 
+// ── Copiar Lista para Clipboard ───────────────────────────────────
+function copyListToClipboard(){
+  const tags   = DB.tags || {};
+  const songs  = Object.values(DB.songs || {}).filter(isSongVisible);
+
+  // Respeita os filtros activos (tag sidebar + filtros da barra)
+  const q       = document.getElementById('searchInput').value.toLowerCase().trim();
+  const fTag    = document.getElementById('filterTag').value;
+  const fRhythm = document.getElementById('filterRhythm').value;
+  const fKey    = document.getElementById('filterKey').value;
+  const sortBy  = document.getElementById('sortBy').value;
+
+  let visible = songs;
+  if(activeTagFilter) visible = visible.filter(s=>(s.tags||[]).includes(activeTagFilter));
+  if(fTag)    visible = visible.filter(s=>(s.tags||[]).includes(fTag));
+  if(fRhythm) visible = visible.filter(s=>s.rhythm===fRhythm);
+  if(fKey)    visible = visible.filter(s=>s.key===fKey);
+  if(q)       visible = visible.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q));
+  visible.sort((a,b)=>{
+    const va=(a[sortBy]||a.title||'').toLowerCase();
+    const vb=(b[sortBy]||b.title||'').toLowerCase();
+    return va.localeCompare(vb,'pt');
+  });
+
+  if(!visible.length){ showToast('Nenhuma música para copiar.', true); return; }
+
+  // Cabeçalho com metadados do evento/lista activa
+  const lines = [];
+  const activeTag = activeTagFilter ? tags[activeTagFilter] : null;
+
+  if(activeTag){
+    const isEvent = activeTag.type === 'event';
+    lines.push(isEvent ? '🎤 SETLIST DE EVENTO' : '📋 SETLIST');
+    lines.push(activeTag.name);
+    if(isEvent){
+      if(activeTag.event_date){
+        const d = new Date(activeTag.event_date + 'T00:00:00');
+        if(!isNaN(d)) lines.push('📅 ' + d.toLocaleDateString('pt-PT',{day:'2-digit',month:'long',year:'numeric'}));
+      }
+      if(activeTag.event_time)     lines.push('🕒 ' + activeTag.event_time);
+      if(activeTag.event_location) lines.push('📍 ' + activeTag.event_location);
+    }
+  } else {
+    lines.push('📋 SETLIST');
+    lines.push('Todas as Músicas');
+  }
+
+  lines.push('🗓 Gerado em ' + new Date().toLocaleDateString('pt-PT'));
+  lines.push(visible.length + ' músicas');
+  lines.push('');
+  lines.push('─'.repeat(40));
+  lines.push('');
+
+  // Lista: "Título - Artista"
+  visible.forEach((s, i) => {
+    lines.push(`${i+1}. ${s.title} - ${s.artist}`);
+  });
+
+  const text = lines.join('\n');
+
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>{
+      showToast('Lista copiada! (' + visible.length + ' músicas)');
+    }).catch(()=>{
+      fallbackCopy(text);
+    });
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text){
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('Lista copiada para o clipboard!');
+  } catch(e){
+    showToast('Não foi possível copiar. Tenta manualmente.', true);
+  }
+  document.body.removeChild(ta);
+}
+
+// ── Importar do Spotify ───────────────────────────────────────────
+function submitSpotifyImport(){
+  const input   = document.getElementById('siInput').value.trim();
+  const tagName = document.getElementById('siTagName').value.trim();
+  const tagType = document.getElementById('siTagType').value;
+
+  if(!input){
+    document.getElementById('spotifyImportResult').innerHTML =
+      '<div class="spot-import-result err">Cola o URL ou ID da playlist do Spotify.</div>';
+    return;
+  }
+
+  // UI: loading
+  document.getElementById('spotifyImportResult').innerHTML = '';
+  document.getElementById('siProgress').style.display = 'flex';
+  document.getElementById('siBtnImport').disabled = true;
+
+  post({
+    _action: 'import_from_spotify',
+    spotify_input: input,
+    tag_name: tagName,
+    tag_type: tagType
+  }, function(r){
+    document.getElementById('siProgress').style.display = 'none';
+    document.getElementById('siBtnImport').disabled = false;
+
+    if(r.ok){
+      document.getElementById('spotifyImportResult').innerHTML =
+        `<div class="spot-import-result ok">
+          ✅ <strong>${escH(r.playlist_name)}</strong> importada!<br>
+          <span style="font-size:.75rem">${r.added} novas músicas adicionadas · ${r.updated} já existentes actualizadas · tag <em>"${escH(r.tag_name)}"</em> criada/actualizada.</span>
+        </div>`;
+      showToast(`Spotify: ${r.added} músicas importadas!`);
+      loadDbFromServer();
+    } else {
+      document.getElementById('spotifyImportResult').innerHTML =
+        `<div class="spot-import-result err">❌ ${escH(r.error||'Erro desconhecido.')}</div>`;
+    }
+  });
+}
+
 // ── Import Originals ──────────────────────────────────────────────
 function doImportOriginals(){
   if(!confirm('Importar músicas e listas dos JSONs originais?\n\nOs JSONs originais NÃO serão modificados.\nO banco V2 (setlist_v2_db.json) será criado/atualizado.')) return;
@@ -2117,42 +2413,32 @@ function openPrintModal(){
   if(listTags.length){ html += '<optgroup label="Listas">'; listTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
   if(otherTags.length){ html += '<optgroup label="Tags">'; otherTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
   document.getElementById('printTagSel').innerHTML = html;
-
-  // Populate per-tag checkbox picker (todas marcadas por padrão)
-  let pickerHtml = '';
-  activeTags.forEach(t=>{
-    pickerHtml += `<label style="display:flex;align-items:center;gap:8px;font-size:.76rem;cursor:pointer">
-      <input type="checkbox" class="print-tag-chk" value="${t.id}" checked style="width:14px;height:14px;accent-color:var(--accent)">
-      ${escH(t.name)}
-    </label>`;
-  });
-  document.getElementById('printTagsPicker').innerHTML = pickerHtml || '<span style="font-size:.72rem;color:var(--text3)">Nenhuma tag criada ainda.</span>';
-  document.getElementById('printWithTags').checked = false;
-  document.getElementById('printTagsPickerWrap').style.display = 'none';
-
   document.getElementById('printModal').classList.add('open');
-}
-
-function togglePrintTagsPicker(){
-  const show = document.getElementById('printWithTags').checked;
-  document.getElementById('printTagsPickerWrap').style.display = show ? '' : 'none';
 }
 
 function doPrint(){
   const tagId    = document.getElementById('printTagSel').value;
   const withTags = document.getElementById('printWithTags').checked;
   const withMeta = document.getElementById('printWithMeta').checked;
-  const allowedTagIds = withTags
-    ? [...document.querySelectorAll('.print-tag-chk:checked')].map(c=>c.value)
-    : [];
 
-  // Build songs list locally (faster than server round-trip)
+  // Build songs list locally — respeita ordem personalizada se existir
   const tags = DB.tags || {};
   let songs = Object.values(DB.songs || {});
   if(tagId) songs = songs.filter(s=>(s.tags||[]).includes(tagId));
-  songs.sort((a,b)=>(a.title||'').localeCompare(b.title||'','pt'));
 
   const activeTag = tagId ? tags[tagId] : null;
+  const customOrder = activeTag && (activeTag.song_order||[]).length > 0 ? activeTag.song_order : null;
+  if(customOrder){
+    const orderMap = {};
+    customOrder.forEach((id, i) => { orderMap[id] = i; });
+    songs.sort((a, b) => {
+      const ia = orderMap[a.id] !== undefined ? orderMap[a.id] : 99999;
+      const ib = orderMap[b.id] !== undefined ? orderMap[b.id] : 99999;
+      return ia !== ib ? ia - ib : (a.title||'').localeCompare(b.title||'', 'pt');
+    });
+  } else {
+    songs.sort((a,b)=>(a.title||'').localeCompare(b.title||'','pt'));
+  }
   const isEvent   = activeTag && activeTag.type === 'event';
   const listName  = activeTag ? activeTag.name : 'Todas as Músicas';
 
@@ -2162,8 +2448,9 @@ function doPrint(){
   let rows = '';
   songs.forEach((s,i)=>{
     const metaTd = withMeta ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.key||'')}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${escH(s.rhythm||'')}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${s.bpm||''}</td>` : '';
-    const tagNames = withTags ? (s.tags||[]).filter(tid=>allowedTagIds.includes(tid)).map(tid=>tags[tid]?.name).filter(Boolean).join(', ') : '';
+    const tagNames = withTags ? (s.tags||[]).map(tid=>tags[tid]?.name).filter(Boolean).join(', ') : '';
     const tagsTd  = withTags ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.68rem;color:#888">${escH(tagNames)}</td>` : '';
+    const accentClr = isEvent ? '#c9960c' : '#1db954';
     rows += `<tr>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.7rem;color:#bbb;text-align:center;font-weight:600">${i+1}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.86rem;font-weight:600;color:#1a1a1a">${escH(s.title)}</td>
@@ -2175,10 +2462,11 @@ function doPrint(){
   // ── Cabeçalho ──
   let header;
   if(isEvent){
-    const dateStr = typeof formatEventDate === 'function' ? formatEventDate(activeTag.event_date) : (activeTag.event_date || '');
+    // Capa de evento: colorida, elaborada, fundo branco
+    const dateStr = formatEventDate(activeTag.event_date);
     const dateParts = activeTag.event_date ? activeTag.event_date.split('-') : null;
     const dayNum = dateParts ? dateParts[2] : '';
-    const monthName = (dateStr && dateStr.split(' ').length > 2) ? dateStr.split(' ')[2] : '';
+    const monthName = dateStr ? dateStr.split(' ')[2] : '';
     header = `
       <div style="background:linear-gradient(135deg,#fffbea 0%,#fff 55%);border:2px solid #f0c419;border-radius:16px;padding:28px 32px;margin-bottom:28px;position:relative;overflow:hidden">
         <div style="position:absolute;top:-30px;right:-30px;width:140px;height:140px;border-radius:50%;background:radial-gradient(circle,rgba(240,196,25,.25),transparent 70%)"></div>
@@ -2206,61 +2494,27 @@ function doPrint(){
       <div style="font-size:.72rem;color:#888;margin-bottom:16px">${songs.length} músicas · ${new Date().toLocaleDateString('pt-BR')}</div>`;
   }
 
-  // HTML limpo sem a tag <script> interna para não quebrar o arquivo principal
   const html = `
     <style>
-      @page { size: A4; margin: 12mm; }
-      html{ font-size: 16px; }
       @media print { body { font-family: 'DM Sans', Arial, sans-serif; color: #111; background:#fff; } }
       body { font-family: 'DM Sans', Arial, sans-serif; background:#fff; padding:8px; }
-      #printRoot td, #printRoot th { padding-top: calc(6px * var(--pscale, 1)); padding-bottom: calc(6px * var(--pscale, 1)); }
     </style>
-    <div id="printRoot">
-      ${header}
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr>
-          <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:center;width:32px">#</th>
-          <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Título</th>
-          <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Artista</th>
-          ${metaTh}${tagsTh}
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    ${header}
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:center;width:32px">#</th>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Título</th>
+        <th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:left">Artista</th>
+        ${metaTh}${tagsTh}
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 
   const pw = window.open('','_blank','width=900,height=700');
-  if(!pw) return alert('Por favor, permita pop-ups para imprimir.');
-
   pw.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escH(listName)} · SetList</title></head><body>${html}</body></html>`);
   pw.document.close();
-
-  // Executa o ajuste dinâmico diretamente na janela pop-up criada
-  try {
-    const doc = pw.document;
-    const root = doc.getElementById('printRoot');
-    const htmlEl = doc.documentElement;
-    if(root && htmlEl){
-      var PAGE_HEIGHT_PX = 1032;
-      var fontPx = 16, pscale = 1;
-      var attempts = 0;
-      while(root.scrollHeight > PAGE_HEIGHT_PX && attempts < 40){
-        fontPx -= 0.4;
-        pscale -= 0.05;
-        if(fontPx < 7) fontPx = 7;
-        if(pscale < 0.12) pscale = 0.12;
-        htmlEl.style.fontSize = fontPx + 'px';
-        htmlEl.style.setProperty('--pscale', pscale);
-        attempts++;
-        if(fontPx <= 7 && pscale <= 0.12) break;
-      }
-    }
-    pw.__printReady = true;
-  } catch(e) {
-    console.error("Erro ao redimensionar página de impressão:", e);
-  }
-
   pw.focus();
-  setTimeout(()=>{ pw.print(); }, 500);
+  setTimeout(()=>{ pw.print(); }, 400);
   closeModal('printModal');
 }
 
@@ -2275,6 +2529,7 @@ function doLogin(){
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
+const SCRIPT_URL = window.location.pathname;
 
 function post(data, cb){
   $.post(SCRIPT_URL, data, cb, 'json')

@@ -1,0 +1,162 @@
+[
+    {
+        "id": "1780483176",
+        "name": "Música no Museu",
+        "spotify_id": "4pSvCefLlue8OH6uDPccjt",
+        "is_default": true,
+        "tags": [],
+        "is_event": true,
+        "event_name": "Música no Museu",
+        "event_local": "Museu Municipal da Murtosa (COMUR)",
+        "event_date": "2026-06-26",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/4pSvCefLlue8OH6uDPccjt"
+    },
+    {
+        "id": "1780129081",
+        "name": "Festa Brasileira",
+        "spotify_id": "3aObXW2LQjej315iH6z7ZA",
+        "is_default": false,
+        "tags": [
+            "Axé",
+            "Conceito"
+        ],
+        "is_event": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/3aObXW2LQjej315iH6z7ZA"
+    },
+    {
+        "id": "brasil",
+        "name": "Som Brasil",
+        "spotify_id": "4pcomesNQA6DPXj1HFpOjf",
+        "is_default": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/4pcomesNQA6DPXj1HFpOjf",
+        "tags": [
+            "Conceito"
+        ],
+        "is_event": false
+    },
+    {
+        "id": "setlist-marcvsmarcal-rock",
+        "name": "Pop & Rock Internacional",
+        "spotify_id": "0PKRnI7wdeI7ASWmzvsKeA",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/0PKRnI7wdeI7ASWmzvsKeA",
+        "is_default": false
+    },
+    {
+        "id": "uma-noite-na-it-lia",
+        "name": "Uma Noite na Itália",
+        "spotify_id": "2PPh2m2mH4LmyiXCvu016a",
+        "is_default": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/2PPh2m2mH4LmyiXCvu016a",
+        "tags": [
+            "Itália"
+        ],
+        "is_event": false
+    },
+    {
+        "id": "l-nara",
+        "name": "Lúnara",
+        "spotify_id": "3h4zSP49OWbfB6UnznXV22",
+        "is_default": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/3h4zSP49OWbfB6UnznXV22"
+    },
+    {
+        "id": "marcvs-mar-al-banco-de-m-sicas",
+        "name": "Marcvs Marçal - Banco de Músicas",
+        "spotify_id": "6y1YlVrViBo9cglbotu2mA",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/6y1YlVrViBo9cglbotu2mA",
+        "is_default": false
+    },
+    {
+        "id": "list-o-geral-voz-e-viol-o",
+        "name": "Listão Geral - Voz e Violão",
+        "spotify_id": "",
+        "is_default": false
+    },
+    {
+        "id": "aprender-rock",
+        "name": "Aprender Rock",
+        "spotify_id": "5m5BrHXxiKoDJq9VM36lrU",
+        "is_default": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/5m5BrHXxiKoDJq9VM36lrU"
+    },
+    {
+        "id": "1779711722",
+        "name": "Mari Voz e Violão",
+        "spotify_id": "3bQZHUUHiLLxuGS3hMDZn9",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/3bQZHUUHiLLxuGS3hMDZn9",
+        "is_default": false
+    },
+    {
+        "id": "1779745354",
+        "name": "Lounge do Marcus",
+        "spotify_id": "2g7f1uyQnceAuaWxD9gm7b",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/2g7f1uyQnceAuaWxD9gm7b",
+        "is_default": false
+    },
+    {
+        "id": "1780007229",
+        "name": "Aniversário Galitos - Maio 2026",
+        "spotify_id": "4AKkdECr2VhHqZcoz1EWHN",
+        "is_default": false,
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/4AKkdECr2VhHqZcoz1EWHN",
+        "tags": [],
+        "is_event": true,
+        "event_name": "Aniversário Nuno",
+        "event_local": "Bar Galitos",
+        "event_date": "2026-05-29"
+    },
+    {
+        "id": "cas-emblem-tico-maio-2026",
+        "name": "Emblemático - Maio 2026",
+        "spotify_id": "0zkohuuHGJdbfpMp8WQGmI",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/0zkohuuHGJdbfpMp8WQGmI",
+        "is_default": false,
+        "tags": [],
+        "is_event": true,
+        "event_name": "Emblemático - Maio 2026",
+        "event_local": "Emblemático",
+        "event_date": "2026-05-09"
+    },
+    {
+        "id": "1779475322",
+        "name": "Ducati - Maio 2026",
+        "spotify_id": "5et20ROQVRotOLtLYfeAGW",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/5et20ROQVRotOLtLYfeAGW",
+        "is_default": false,
+        "tags": [],
+        "is_event": true,
+        "event_name": "Ducati Águeda - Maio 2026",
+        "event_local": "Ducati Lounge",
+        "event_date": "2026-05-23"
+    },
+    {
+        "id": "1781289166",
+        "name": "Arraial da Aline! (cópia)",
+        "spotify_id": "",
+        "is_default": false
+    },
+    {
+        "id": "1780574070",
+        "name": "Arraial da Aline!",
+        "spotify_id": "4evPAkub5AXoy2rNe6BNVk",
+        "is_default": false,
+        "tags": [],
+        "is_event": true,
+        "event_name": "Festa Junina Quinta Aline",
+        "event_local": "Nossa Quinta Oliveira do Bairro",
+        "event_date": "2026-06-13",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/4evPAkub5AXoy2rNe6BNVk"
+    },
+    {
+        "id": "1781567729",
+        "name": "Música no Museu",
+        "spotify_id": "4pSvCefLlue8OH6uDPccjt",
+        "spotify_url": "https:\/\/open.spotify.com\/playlist\/4pSvCefLlue8OH6uDPccjt",
+        "is_default": false,
+        "tags": [],
+        "is_event": true,
+        "event_name": "Música no Museu",
+        "event_local": "Comur Murtosa",
+        "event_date": "2026-06-26"
+    }
+]
