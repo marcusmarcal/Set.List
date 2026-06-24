@@ -3232,7 +3232,7 @@ function updateExportSpotifyBtn(){
   if(!btn) return;
   if(!activeTagFilter){ btn.style.display='none'; return; }
   const tag = (DB.tags||{})[activeTagFilter];
-  if(!tag || !['event','list'].includes(tag.type||'')){ btn.style.display='none'; return; }
+  if(!tag){ btn.style.display='none'; return; }
   const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
   const hasSpotify = songs.some(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
   btn.style.display = hasSpotify ? '' : 'none';
