@@ -335,31 +335,40 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $name = $tag['name'];
 
         if($playlistId){
-            // Actualizar playlist existente
+            // Substituir playlist existente:
+            // PUT com primeiros 100 (limpa e define), depois POST para o resto
+            $chunks = array_chunk($uris, 100);
+            $first  = array_shift($chunks); // pode ser vazio se < 100 músicas
             $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
             curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                CURLOPT_CUSTOMREQUEST=>'PUT',CURLOPT_POSTFIELDS=>json_encode(['uris'=>array_slice($uris,0,100)]),
-                CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>15]);
+                CURLOPT_CUSTOMREQUEST=>'PUT', CURLOPT_POSTFIELDS=>json_encode(['uris'=>$first]),
+                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
             curl_exec($ch); $code=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
             if($code>=400) jsonOut(['ok'=>false,'error'=>"Erro ao actualizar playlist ($code). Verifica se ainda tens acesso a ela."]);
+            // Adicionar chunks restantes
+            foreach($chunks as $chunk){
+                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
+                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
+                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+                curl_exec($ch); curl_close($ch);
+            }
         } else {
-            // Criar nova playlist
+            // Criar nova playlist vazia, depois adicionar tudo
             $ch = curl_init("https://api.spotify.com/v1/users/{$userId}/playlists");
             curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['name'=>$name,'description'=>$desc,'public'=>false]),
-                CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>15]);
+                CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['name'=>$name,'description'=>$desc,'public'=>false]),
+                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
             $pl = json_decode(curl_exec($ch),true); curl_close($ch);
             if(empty($pl['id'])) jsonOut(['ok'=>false,'error'=>'Não foi possível criar a playlist.']);
             $playlistId = $pl['id'];
-        }
-
-        // Adicionar músicas (em chunks de 100)
-        foreach(array_chunk($uris,100) as $chunk){
-            $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
-            curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
-                CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>15]);
-            curl_exec($ch); curl_close($ch);
+            foreach(array_chunk($uris, 100) as $chunk){
+                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
+                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
+                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+                curl_exec($ch); curl_close($ch);
+            }
         }
 
         // Guardar spotify_id na tag
@@ -1402,7 +1411,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div class="fg"><label class="fl">Tags</label>
         <div class="tags-picker" id="asTagsPicker"></div>
       </div>
-      <div class="fg"><label class="fl">URL Spotify</label><input class="fi" id="asSpotify" placeholder="https://open.spotify.com/track/…" onblur="fetchSpotifyDuration(this,'asDuration')"></div>
+      <div class="fg"><label class="fl">URL Spotify</label><div style="display:flex;gap:6px"><input class="fi" id="asSpotify" placeholder="https://open.spotify.com/track/…" style="flex:1"><button type="button" class="btn btn-ghost" style="padding:6px 10px;font-size:.7rem;white-space:nowrap;flex-shrink:0" onclick="fetchSpotifyDuration(document.getElementById('asSpotify'),'asDuration')">🎵 Buscar duração</button></div></div>
       <div class="fg"><label class="fl">Duração manual <span style="color:var(--text3);font-weight:400">(mm:ss — só se não tiver Spotify)</span></label><input class="fi" id="asDuration" placeholder="Ex: 3:42" maxlength="7" style="font-family:'DM Mono',monospace"></div>
       <div class="fg"><label class="fl">Notas / Observações</label><textarea class="fi" id="asNotes" rows="2" placeholder="Observações sobre a música…"></textarea></div>
     </div>
@@ -1442,7 +1451,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div class="fg"><label class="fl">Tags</label>
         <div class="tags-picker" id="esTagsPicker"></div>
       </div>
-      <div class="fg"><label class="fl">URL Spotify</label><input class="fi" id="esSpotify" onblur="fetchSpotifyDuration(this,'esDuration')"></div>
+      <div class="fg"><label class="fl">URL Spotify</label><div style="display:flex;gap:6px"><input class="fi" id="esSpotify" style="flex:1"><button type="button" class="btn btn-ghost" style="padding:6px 10px;font-size:.7rem;white-space:nowrap;flex-shrink:0" onclick="fetchSpotifyDuration(document.getElementById('esSpotify'),'esDuration')">🎵 Buscar duração</button></div></div>
       <div class="fg"><label class="fl">Duração manual <span style="color:var(--text3);font-weight:400">(mm:ss — sobreposta pelo Spotify se existir)</span></label><input class="fi" id="esDuration" placeholder="Ex: 3:42" maxlength="7" style="font-family:'DM Mono',monospace"></div>
       <div class="fg"><label class="fl">Notas</label><textarea class="fi" id="esNotes" rows="2"></textarea></div>
     </div>
@@ -2988,26 +2997,63 @@ function doImportOriginals(){
 }
 
 // ── Ler duração da track Spotify ao vincular ──────────────────────
-function fetchSpotifyDuration(inputEl, durFieldId){
+// Feito inteiramente no browser (evita limitações de curl no servidor)
+const _spotClientId     = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: '') ?>';
+const _spotClientSecret = '<?= addslashes(envVal('CLIENT_SECRET') ?: envVal('SPOTIPY_CLIENT_SECRET') ?: '') ?>';
+let _spotClientToken = null;
+
+async function getSpotClientToken(){
+  if(_spotClientToken) return _spotClientToken;
+  if(!_spotClientId || !_spotClientSecret) return null;
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + btoa(_spotClientId + ':' + _spotClientSecret)
+      },
+      body: 'grant_type=client_credentials'
+    });
+    const data = await r.json();
+    _spotClientToken = data.access_token || null;
+    return _spotClientToken;
+  } catch(e){ return null; }
+}
+
+async function fetchSpotifyDuration(inputEl, durFieldId){
   const url = (inputEl.value||'').trim();
-  if(!url || !url.includes('spotify')) return;
-  if(!/track\/[A-Za-z0-9]+/.test(url)) return;
+  if(!url) return;
+  const m = url.match(/track\/([A-Za-z0-9]+)/);
+  if(!m){ showToast('URL de track inválido.', true); return; }
+  const trackId = m[1];
   const durEl = document.getElementById(durFieldId);
-  durEl.placeholder = 'A buscar…';
-  post({ _action:'fetch_track_duration', spotify_url: url }, function(r){
-    durEl.placeholder = 'Ex: 3:42';
-    if(r.ok && r.duration_ms){
-      durEl.value = fmtDuration(r.duration_ms);
+  const btnEl = inputEl.parentElement.querySelector('button');
+  const origLabel = btnEl ? btnEl.textContent : '';
+  if(btnEl){ btnEl.disabled = true; btnEl.textContent = 'A buscar…'; }
+
+  try {
+    // Tenta com user token primeiro (se disponível), senão client credentials
+    const token = _spotifyUserToken || await getSpotClientToken();
+    if(!token){ showToast('Sem token Spotify disponível.', true); return; }
+    const r = await fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if(!r.ok){ showToast('Track não encontrada no Spotify.', true); return; }
+    const data = await r.json();
+    if(data.duration_ms){
+      durEl.value = fmtDuration(data.duration_ms);
       durEl.style.color = '#1db954';
       setTimeout(()=>{ durEl.style.color=''; }, 2000);
-      // Guardar URI no campo oculto (edit song modal)
-      if(r.spotify_uri){
-        const uriEl = document.getElementById('esSpotifyUri');
-        if(uriEl) uriEl.value = r.spotify_uri;
-      }
+      // Guardar URI
+      const uriEl = document.getElementById('esSpotifyUri');
+      if(uriEl && data.uri) uriEl.value = data.uri;
       showToast('Duração obtida do Spotify!');
     }
-  });
+  } catch(e){
+    showToast('Erro ao contactar Spotify.', true);
+  } finally {
+    if(btnEl){ btnEl.disabled = false; btnEl.textContent = origLabel; }
+  }
 }
 
 // ── Exportar tag/lista para Spotify ──────────────────────────────
@@ -3150,7 +3196,8 @@ function showSeStep2(){
 function doExportToSpotify(){
   if(!activeTagFilter||!_spotifyUserToken) return;
   const btn = document.getElementById('seExportBtn');
-  btn.disabled = true; btn.textContent = 'A exportar…';
+  const label = document.getElementById('seExportBtnLabel');
+  btn.disabled = true; label.textContent = 'A exportar…';
   showSaving();
   post({
     _action:'export_tag_to_spotify',
@@ -3159,8 +3206,8 @@ function doExportToSpotify(){
   }, function(r){
     hideSaving();
     btn.disabled = false;
-    document.getElementById('seExportBtnLabel').textContent = 'Actualizar Playlist';
     if(r.ok){
+      label.textContent = 'Actualizar Playlist';
       const el = document.getElementById('seExportResult');
       el.style.display = '';
       el.innerHTML = `<div style="padding:10px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;font-size:.8rem">
@@ -3173,8 +3220,8 @@ function doExportToSpotify(){
       loadDbFromServer();
       showToast(`Playlist exportada! ${r.tracks} músicas.`);
     } else {
+      label.textContent = 'Tentar novamente';
       showErr('spotifyExportErr', r.error||'Erro ao exportar.');
-      btn.innerHTML = `<span id="seExportBtnLabel">Tentar novamente</span>`;
     }
   });
 }
