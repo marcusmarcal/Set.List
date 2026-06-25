@@ -933,6 +933,14 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .search-input::placeholder{color:var(--text3)}
 .filter-select{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;font-family:'DM Sans',sans-serif;font-size:.8rem;color:var(--text2);cursor:pointer;outline:none}
 .filter-select:focus{border-color:var(--border2)}
+.filter-tag-picker{position:relative}
+.tag-picker-dropdown{position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);min-width:220px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.tpd-item{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:.78rem;color:var(--text1);cursor:pointer;transition:background var(--tr)}
+.tpd-item:hover{background:var(--bg3)}
+.tpd-item input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;flex-shrink:0}
+.tpd-item.exclude{color:var(--red,#e05)}
+.tpd-sep{height:1px;background:var(--border);margin:2px 0}
+.tpd-notag{font-style:italic;color:var(--text3)}
 
 /* ── TABLE ── */
 .table-wrap{border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;background:var(--bg2)}
@@ -989,6 +997,7 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 .tp-chip.sel-list{background:var(--accent-dim);color:var(--accent);border-color:var(--accent-glow)}
 .tp-chip.sel-custom{background:var(--purple-dim);color:var(--purple);border-color:rgba(167,139,250,.3)}
 .tp-chip.sel-musician{background:var(--orange-dim);color:var(--orange);border-color:rgba(251,146,60,.3)}
+.tp-chip.sel-exclude{background:rgba(220,38,38,.12);color:#f87171;border-color:rgba(220,38,38,.35);text-decoration:line-through}
 
 /* alerts */
 .alert{padding:10px 14px;border-radius:var(--r);font-size:.8rem;margin-bottom:14px;display:flex;align-items:center;gap:8px}
@@ -1331,9 +1340,12 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="search-input" id="searchInput" placeholder="Buscar por título ou artista…" oninput="applyFilters()">
       </div>
-      <select class="filter-select" id="filterTag" onchange="applyFilters()">
-        <option value="">Todas as tags</option>
-      </select>
+      <div class="filter-tag-picker" id="filterTagPicker">
+        <button class="filter-select" id="filterTagBtn" onclick="toggleTagPicker(event)" style="cursor:pointer;text-align:left">Tags ▾</button>
+        <div class="tag-picker-dropdown" id="tagPickerDropdown" style="display:none">
+          <div id="tpdTagList" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px"></div>
+        </div>
+      </div>
       <select class="filter-select" id="filterRhythm" onchange="applyFilters()">
         <option value="">Todos os ritmos</option>
       </select>
@@ -1759,8 +1771,9 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 <div class="bulk-bar" id="bulkBar">
   <span class="bulk-count" id="bulkCount">0 selecionadas</span>
   <div class="bulk-actions">
-    <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
-    <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
+    <button class="btn btn-ghost" onclick="selectAllVisible()" title="Selecionar todas as músicas visíveis">☑ Todas</button>
+    <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag</button>
+    <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag</button>
     <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
   </div>
   <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
@@ -1789,7 +1802,8 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="bulkAddErr" class="form-err"></div>
       <div class="fg">
         <label class="fl">Escolhe uma ou mais tags para adicionar</label>
-        <div id="bulkAddTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
+        <p id="bulkAddCount" style="font-size:.72rem;color:var(--text3);margin:0 0 8px"></p>
+        <div id="bulkAddTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow-y:auto;padding:4px"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1807,7 +1821,8 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="bulkRemoveErr" class="form-err"></div>
       <div class="fg">
         <label class="fl">Escolhe uma ou mais tags para remover</label>
-        <div id="bulkRemoveTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
+        <p id="bulkRemoveCount" style="font-size:.72rem;color:var(--text3);margin:0 0 8px"></p>
+        <div id="bulkRemoveTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow-y:auto;padding:4px"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1899,7 +1914,7 @@ function renderSidebar(){
   const today = new Date().toISOString().slice(0,10);
   const allEvents = activeTags.filter(t=>t.type==='event');
   const futureEvents = allEvents.filter(t=>!t.event_date || t.event_date >= today)
-    .sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999'));
+    .sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999')); // mais próximo primeiro
   const pastEvents = allEvents.filter(t=>t.event_date && t.event_date < today)
     .sort((a,b)=>b.event_date.localeCompare(a.event_date)); // mais recente primeiro
   const lists = activeTags.filter(t=>t.type==='list');
@@ -1910,7 +1925,7 @@ function renderSidebar(){
   function tagSection(label, tagArr, dotClass, isEvent){
     if(!tagArr.length) return '';
     let h = `<div style="font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text3);padding:10px 8px 4px">${label}</div>`;
-    const arr = isEvent ? [...tagArr].sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||'')) : tagArr;
+    const arr = tagArr;
     arr.forEach(t => {
       const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
       const isAct = activeTagFilter===t.id;
@@ -1944,12 +1959,8 @@ function renderFilterDropdowns(){
   const rhythmsInUse = [...new Set(Object.values(DB.songs||{}).map(s=>s.rhythm).filter(Boolean))];
   const keysInUse    = [...new Set(Object.values(DB.songs||{}).map(s=>s.key).filter(Boolean))];
 
-  // Tag filter (tags arquivadas não aparecem)
-  let tHtml = '<option value="">Todas as tags</option>';
-  Object.values(tags).filter(t=>!t.archived).forEach(t => {
-    tHtml += `<option value="${t.id}">${escH(t.name)}</option>`;
-  });
-  document.getElementById('filterTag').innerHTML = tHtml;
+  // Tag picker — chips igual aos modais de bulk/add song
+  renderFilterTagPicker();
 
   // Rhythm filter
   let rHtml = '<option value="">Todos os ritmos</option>';
@@ -1977,19 +1988,31 @@ function setTagFilter(tid){
 }
 
 function applyFilters(){
-  const q      = document.getElementById('searchInput').value.toLowerCase().trim();
-  const fTag   = document.getElementById('filterTag').value;
-  const fRhythm= document.getElementById('filterRhythm').value;
-  const fKey   = document.getElementById('filterKey').value;
-  const sortBy = document.getElementById('sortBy').value;
+  const q       = document.getElementById('searchInput').value.toLowerCase().trim();
+  const fRhythm = document.getElementById('filterRhythm').value;
+  const fKey    = document.getElementById('filterKey').value;
+  const sortBy  = document.getElementById('sortBy').value;
+  const noTag      = document.getElementById('tpdNoTagChip')?.classList.contains('sel-custom');
+  const includeTags = [...document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip).sel-list, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-custom, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-musician')].map(c=>c.dataset.tid);
+  const excludeTags = [...document.querySelectorAll('#tpdTagList .tp-chip.sel-exclude')].map(c=>c.dataset.tid);
+
+  // Atualizar label do botão
+  const total = includeTags.length + excludeTags.length + (noTag?1:0);
+  const btn = document.getElementById('filterTagBtn');
+  if(btn) btn.textContent = total ? `Tags (${total}) ▾` : 'Tags ▾';
 
   let songs = Object.values(DB.songs || {}).filter(isSongVisible);
 
-  // Tag filter (sidebar)
+  // Tag filter (sidebar) — obrigatória
   if(activeTagFilter) songs = songs.filter(s=>(s.tags||[]).includes(activeTagFilter));
 
-  // Additional filters
-  if(fTag)    songs = songs.filter(s=>(s.tags||[]).includes(fTag));
+  // "Sem tag nenhuma" — só quando não há activeTagFilter
+  if(noTag && !activeTagFilter){
+    songs = songs.filter(s=>!(s.tags||[]).length);
+  } else {
+    includeTags.forEach(tid => { songs = songs.filter(s=>(s.tags||[]).includes(tid)); });
+    excludeTags.forEach(tid => { songs = songs.filter(s=>!(s.tags||[]).includes(tid)); });
+  }
   if(fRhythm) songs = songs.filter(s=>s.rhythm===fRhythm);
   if(fKey)    songs = songs.filter(s=>s.key===fKey);
   if(q)       songs = songs.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q));
@@ -1998,7 +2021,7 @@ function applyFilters(){
   // O sortBy do dropdown é IGNORADO quando há ordem personalizada — nunca destrói a ordem guardada
   const activeTag = activeTagFilter ? DB.tags[activeTagFilter] : null;
   const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
-  const hasExtraFilters = !!(fTag || fRhythm || fKey || q);
+  const hasExtraFilters = !!(includeTags.length || excludeTags.length || noTag || fRhythm || fKey || q);
   const isOrderMode = hasCustomOrder && !hasExtraFilters;
 
   if(isOrderMode){
@@ -2414,6 +2437,14 @@ function toggleSongSelection(sid){
   updateBulkBar();
 }
 
+function selectAllVisible(){
+  document.querySelectorAll('tr.song-row').forEach(row => {
+    const sid = row.dataset.id;
+    if(sid){ selectedSongIds.add(sid); row.classList.add('selected'); }
+  });
+  updateBulkBar();
+}
+
 function clearSelection(){
   selectedSongIds.clear();
   document.querySelectorAll('tr.song-row.selected').forEach(r => r.classList.remove('selected'));
@@ -2432,6 +2463,7 @@ function openBulkTagModal(){
   if(!selectedSongIds.size) return;
   renderTagsPicker('bulkAddTagsPicker', []);
   document.getElementById('bulkAddErr').textContent = '';
+  document.getElementById('bulkAddCount').textContent = `${selectedSongIds.size} música(s) selecionada(s)`;
   openModal('bulkAddModal');
 }
 
@@ -2439,40 +2471,25 @@ function openBulkRemoveModal(){
   if(!selectedSongIds.size) return;
   renderTagsPicker('bulkRemoveTagsPicker', []);
   document.getElementById('bulkRemoveErr').textContent = '';
+  document.getElementById('bulkRemoveCount').textContent = `${selectedSongIds.size} música(s) selecionada(s)`;
   openModal('bulkRemoveModal');
 }
 
 function submitBulkAdd(){
-  const addIds = getSelectedTags('bulkAddTagsPicker');
-  if(!addIds.length){ showErr('bulkAddErr','Escolhe pelo menos uma tag.'); return; }
-  post({
-    _action: 'bulk_tag',
-    song_ids: JSON.stringify([...selectedSongIds]),
-    add_tags: JSON.stringify(addIds),
-    remove_tags: '[]'
-  }, function(r){
-    if(r.ok){
-      closeModal('bulkAddModal');
-      showToast(r.changed + ' música(s) atualizada(s)!');
-      loadDbFromServer();
-    } else showErr('bulkAddErr', r.error || 'Erro.');
+  const ids = getSelectedTags('bulkAddTagsPicker');
+  if(!ids.length){ showErr('bulkAddErr','Escolhe pelo menos uma tag.'); return; }
+  post({ _action:'bulk_tag', song_ids:JSON.stringify([...selectedSongIds]), add_tags:JSON.stringify(ids), remove_tags:'[]' }, function(r){
+    if(r.ok){ closeModal('bulkAddModal'); showToast(r.changed+' música(s) actualizada(s)!'); loadDbFromServer(); }
+    else showErr('bulkAddErr', r.error||'Erro.');
   });
 }
 
 function submitBulkRemove(){
-  const removeIds = getSelectedTags('bulkRemoveTagsPicker');
-  if(!removeIds.length){ showErr('bulkRemoveErr','Escolhe pelo menos uma tag.'); return; }
-  post({
-    _action: 'bulk_tag',
-    song_ids: JSON.stringify([...selectedSongIds]),
-    add_tags: '[]',
-    remove_tags: JSON.stringify(removeIds)
-  }, function(r){
-    if(r.ok){
-      closeModal('bulkRemoveModal');
-      showToast(r.changed + ' música(s) atualizada(s)!');
-      loadDbFromServer();
-    } else showErr('bulkRemoveErr', r.error || 'Erro.');
+  const ids = getSelectedTags('bulkRemoveTagsPicker');
+  if(!ids.length){ showErr('bulkRemoveErr','Escolhe pelo menos uma tag.'); return; }
+  post({ _action:'bulk_tag', song_ids:JSON.stringify([...selectedSongIds]), add_tags:'[]', remove_tags:JSON.stringify(ids) }, function(r){
+    if(r.ok){ closeModal('bulkRemoveModal'); showToast(r.changed+' música(s) actualizada(s)!'); loadDbFromServer(); }
+    else showErr('bulkRemoveErr', r.error||'Erro.');
   });
 }
 
@@ -3236,6 +3253,51 @@ function updateExportSpotifyBtn(){
   const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
   const hasSpotify = songs.some(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
   btn.style.display = hasSpotify ? '' : 'none';
+}
+
+// ── Tag filter picker ─────────────────────────────────────────────
+function toggleTagPicker(e){
+  e.stopPropagation();
+  const dd = document.getElementById('tagPickerDropdown');
+  dd.style.display = dd.style.display !== 'none' ? 'none' : '';
+}
+function toggleNoTagFilter(el){
+  el.classList.toggle('sel-custom');
+  applyFilters();
+}
+document.addEventListener('click', function(e){
+  const picker = document.getElementById('tagPickerDropdown');
+  if(picker && picker.style.display !== 'none'){
+    if(!document.getElementById('filterTagPicker').contains(e.target)){
+      picker.style.display = 'none';
+    }
+  }
+});
+// Wrap renderTagsPicker chips in tpdTagList to also call applyFilters on toggle
+function renderFilterTagPicker(){
+  renderTagsPicker('tpdTagList', []);
+  const noTagChip = `<span class="tp-chip" id="tpdNoTagChip" onclick="toggleNoTagFilter(this)" style="font-style:italic">Sem tag</span>`;
+  document.getElementById('tpdTagList').insertAdjacentHTML('afterbegin', noTagChip);
+  // Override onclick: ciclo de 3 estados — neutro → incluir → excluir → neutro
+  document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip)').forEach(chip => {
+    chip.dataset.type = chip.dataset.type || 'custom';
+    chip.onclick = function(){ toggleFilterChip(this); applyFilters(); };
+  });
+}
+
+function toggleFilterChip(el){
+  const selCls = el.dataset.type==='list' ? 'sel-list' : el.dataset.type==='musician' ? 'sel-musician' : 'sel-custom';
+  if(el.classList.contains('sel-exclude')){
+    // excluir → neutro
+    el.classList.remove('sel-exclude');
+  } else if(el.classList.contains(selCls)){
+    // incluir → excluir
+    el.classList.remove(selCls);
+    el.classList.add('sel-exclude');
+  } else {
+    // neutro → incluir
+    el.classList.add(selCls);
+  }
 }
 
 // ── Calendário de Eventos ─────────────────────────────────────────
