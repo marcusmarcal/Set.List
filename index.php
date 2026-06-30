@@ -25,36 +25,64 @@ function envVal($key) {
     return $c[$key] ?? null;
 }
 
-// ── Auth ─────────────────────────────────────────────────────────
-function adminPwd()  {
-    return envVal('APP_PASS') ?: envVal('ADMIN_PASSWORD') ?: envVal('ADMIN_PASS') ?: envVal('PASSWORD') ?: '';
-}
-function isLocked()  { return adminPwd() !== ''; }
-function isAuthed()  {
-    if(!isLocked()) return true;
-    return ($_SESSION['authed'] ?? '') === adminPwd();
+// ── Auth (REABILITADA) ──────────────────────────────────────────
+function adminPwd()  { 
+  // Tenta pegar a senha do arquivo .env, se não existir, usa 'marcus' ou 'teste' como padrão
+  return envVal('ADMIN_PWD') ?? 'marcus'; 
 }
 
-// ── Spotify redirect URI ─────────────────────────────────────────
-function spotifyRedirectUri() {
-    // Configurável via .env como SPOTIFY_REDIRECT_URI (recomendado)
-    // Fallback: detecta automaticamente
-    $env = envVal('SPOTIFY_REDIRECT_URI');
-    if($env) return rtrim($env, '/') . '/?spotify_callback=1';
-    $scheme = (isset($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off') ? 'https' : 'http';
-    $host   = $_SERVER['HTTP_HOST'];
-    // Usa sempre a raiz do domínio (sem index.php)
-    return $scheme . '://' . $host . '/?spotify_callback=1';
+function isLocked()  { 
+  return true; 
+}
+
+function isAuthed()  { 
+  return isset($_SESSION['authenticated']) && $_SESSION['authenticated'] === true; 
 }
 
 function jsonOut($data) {
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
-    exit;
+  header('Content-Type: application/json; charset=utf-8');
+  echo json_encode($data, JSON_UNESCAPED_UNICODE);
+  exit;
 }
+
 function needAuth() {
-    if(!isAuthed()) jsonOut(['ok'=>false,'error'=>'Não autorizado.']);
+  if (isLocked() && !isAuthed()) {
+      jsonOut(['error' => 'Não autorizado. Faça login primeiro.']);
+  }
 }
+
+// ── INTERCEPTOR DE LOGIN ────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
+  if ($_POST['password'] === adminPwd()) {
+      $_SESSION['authenticated'] = true;
+      jsonOut(['success' => true]);
+  } else {
+      jsonOut(['success' => false, 'error' => 'Senha incorreta.']);
+  }
+}
+
+// ── INTERCEPTOR DE LOGOUT (NOVO) ────────────────────────────────
+if (isset($_GET['logout'])) {
+  // Limpa os dados da sessão
+  $_SESSION = [];
+  
+  // Destrói a sessão no servidor
+  if (ini_get("session.use_cookies")) {
+      $params = session_get_cookie_params();
+      setcookie(session_name(), '', time() - 42000,
+          $params["path"], $params["domain"],
+          $params["secure"], $params["httponly"]
+      );
+  }
+  session_destroy();
+  
+  // Redireciona limpando o "?logout=1" da URL
+  header('Location: ' . $_SERVER['PHP_SELF']); 
+  exit; 
+}
+// ────────────────────────────────────────────────────────────────
+
+// O restante do seu arquivo (UUID, carregamento de dados, HTML) continua daqui para baixo...
 
 // ── UUID ─────────────────────────────────────────────────────────
 function newUuid() {
@@ -174,6 +202,7 @@ function importOriginalJsons() {
                     'key'          => '',
                     'bpm'          => '',
                     'rhythm'       => '',
+                    'capo'         => '',
                     'notes'        => '',
                 ];
                 $db['songs'][$uuid] = $newSong;
@@ -211,60 +240,9 @@ function fmtMs($ms){
     return $m.':'.str_pad($s,2,'0',STR_PAD_LEFT);
 }
 
-// ── Login / Logout ───────────────────────────────────────────────
-if(($_POST['_action']??'')==='_login'){
-    $pwd = trim($_POST['password']??'');
-    if($pwd === adminPwd()){ $_SESSION['authed'] = adminPwd(); jsonOut(['ok'=>true]); }
-    else jsonOut(['ok'=>false,'error'=>'Senha incorrecta.']);
-}
-if(isset($_GET['logout'])){ unset($_SESSION['authed']); header('Location: '.$_SERVER['PHP_SELF']); exit; }
-
-// ── Spotify OAuth PKCE callback (popup) ──────────────────────────
-if(isset($_GET['spotify_callback'])){
-    $code  = trim($_GET['code']  ?? '');
-    $error = trim($_GET['error'] ?? '');
-    [$clientId,] = spotCreds();
-    $redirectUri = spotifyRedirectUri();
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spotify Auth</title></head>'
-        .'<body style="background:#111;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
-        .'<div id="msg" style="text-align:center;font-size:.9rem;color:#aaa">A processar…</div><script>'
-        .'(function(){'
-        .'var code='.json_encode($code).';'
-        .'var err='.json_encode($error).';'
-        .'var clientId='.json_encode($clientId).';'
-        .'var redirectUri='.json_encode($redirectUri).';'
-        .'if(err||!code){'
-        .'  document.getElementById("msg").textContent="Erro: "+(err||"código não recebido");'
-        .'  if(window.opener)window.opener.spotifyAuthError(err||"no_code");'
-        .'  return;'
-        .'}'
-        // Troca code por token usando PKCE (sem client_secret) directamente do JS
-        .'var verifier=sessionStorage.getItem("spotify_pkce_verifier");'
-        .'fetch("https://accounts.spotify.com/api/token",{'
-        .'  method:"POST",'
-        .'  headers:{"Content-Type":"application/x-www-form-urlencoded"},'
-        .'  body:new URLSearchParams({grant_type:"authorization_code",code:code,redirect_uri:redirectUri,client_id:clientId,code_verifier:verifier})'
-        .'}).then(r=>r.json()).then(data=>{'
-        .'  if(data.access_token){'
-        .'    sessionStorage.setItem("spotify_access_token",data.access_token);'
-        .'    document.getElementById("msg").textContent="Autorizado! A fechar…";'
-        .'    if(window.opener&&!window.opener.closed){'
-        .'      window.opener.extractSpotifyToken(data.access_token);'
-        .'      setTimeout(()=>window.close(),600);'
-        .'    }'
-        .'  } else {'
-        .'    var e=data.error_description||data.error||"Falhou";'
-        .'    document.getElementById("msg").textContent="Erro: "+e;'
-        .'    if(window.opener)window.opener.spotifyAuthError(e);'
-        .'  }'
-        .'}).catch(e=>{'
-        .'  document.getElementById("msg").textContent="Erro de rede: "+e;'
-        .'  if(window.opener)window.opener.spotifyAuthError(String(e));'
-        .'});'
-        .'})();'
-        .'</script></body></html>';
-    exit;
-}
+// ── Login (desabilitado) ─────────────────────────────────────────
+if(($_POST['_action']??'')==='_login'){ jsonOut(['ok'=>true]); }
+if(isset($_GET['logout'])){ header('Location: '.$_SERVER['PHP_SELF']); exit; }
 
 // ── AJAX Actions ────────────────────────────────────────────────
 if($_SERVER['REQUEST_METHOD']==='POST'){
@@ -280,102 +258,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(!empty($existing['settings']['rhythms'])) $db['settings']['rhythms'] = $existing['settings']['rhythms'];
         saveDb($db);
         jsonOut(['ok'=>true,'songs'=>count($db['songs']),'tags'=>count($db['tags'])]);
-    }
-
-    // ── Buscar duração de track Spotify ──
-    if($act==='fetch_track_duration'){
-        if(!hasSpotCreds()) jsonOut(['ok'=>false,'error'=>'Sem credenciais Spotify.']);
-        $url = trim($_POST['spotify_url']??'');
-        // Extrair track ID
-        if(preg_match('#track/([A-Za-z0-9]+)#', $url, $m)) $trackId = $m[1];
-        elseif(preg_match('#spotify:track:([A-Za-z0-9]+)#', $url, $m)) $trackId = $m[1];
-        else jsonOut(['ok'=>false,'error'=>'URL de track inválido.']);
-        $token = spotToken();
-        if(!$token) jsonOut(['ok'=>false,'error'=>'Token Spotify inválido.']);
-        $ch = curl_init("https://api.spotify.com/v1/tracks/{$trackId}?fields=duration_ms,uri,external_urls");
-        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],'CURLOPT_RETURNTRANSFER'=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);
-        $r = json_decode(curl_exec($ch),true); curl_close($ch);
-        if(empty($r['duration_ms'])) jsonOut(['ok'=>false,'error'=>'Track não encontrada.']);
-        jsonOut(['ok'=>true,'duration_ms'=>(int)$r['duration_ms'],'spotify_uri'=>$r['uri']??'']);
-    }
-
-    // ── Exportar tag como playlist Spotify ──
-    if($act==='export_tag_to_spotify'){
-        needAuth();
-        if(!hasSpotCreds()) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas.']);
-        $db    = loadDb();
-        $tid   = trim($_POST['tag_id']??'');
-        $token = trim($_POST['user_token']??''); // OAuth user token vindo do JS (PKCE)
-        $tag   = $db['tags'][$tid] ?? null;
-        if(!$tag) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
-        if(!$token) jsonOut(['ok'=>false,'error'=>'Token de utilizador em falta.']);
-
-        // Músicas da tag com spotify_uri
-        $order = $tag['song_order'] ?? array_keys($db['songs']);
-        $uris  = [];
-        foreach($order as $sid){
-            $s = $db['songs'][$sid] ?? null;
-            if(!$s || !(in_array($tid,$s['tags']??[]))) continue;
-            $uri = $s['spotify_uri'] ?? '';
-            if(!$uri && ($s['spotify_url']??'') && preg_match('#track/([A-Za-z0-9]+)#',$s['spotify_url'],$m))
-                $uri = 'spotify:track:'.$m[1];
-            if($uri) $uris[] = $uri;
-        }
-        if(!$uris) jsonOut(['ok'=>false,'error'=>'Nenhuma música desta tag tem link Spotify.']);
-
-        // Obter user ID
-        $ch = curl_init('https://api.spotify.com/v1/me');
-        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);
-        $me = json_decode(curl_exec($ch),true); curl_close($ch);
-        if(empty($me['id'])) jsonOut(['ok'=>false,'error'=>'Não foi possível obter o utilizador Spotify. Token expirado?']);
-        $userId = $me['id'];
-
-        $playlistId = $tag['spotify_id'] ?? '';
-        $desc = 'Exportado por SetList V2 em '.date('d/m/Y');
-        $name = $tag['name'];
-
-        if($playlistId){
-            // Substituir playlist existente:
-            // PUT com primeiros 100 (limpa e define), depois POST para o resto
-            $chunks = array_chunk($uris, 100);
-            $first  = array_shift($chunks); // pode ser vazio se < 100 músicas
-            $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
-            curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                CURLOPT_CUSTOMREQUEST=>'PUT', CURLOPT_POSTFIELDS=>json_encode(['uris'=>$first]),
-                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
-            curl_exec($ch); $code=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
-            if($code>=400) jsonOut(['ok'=>false,'error'=>"Erro ao actualizar playlist ($code). Verifica se ainda tens acesso a ela."]);
-            // Adicionar chunks restantes
-            foreach($chunks as $chunk){
-                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
-                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
-                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
-                curl_exec($ch); curl_close($ch);
-            }
-        } else {
-            // Criar nova playlist vazia, depois adicionar tudo
-            $ch = curl_init("https://api.spotify.com/v1/users/{$userId}/playlists");
-            curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['name'=>$name,'description'=>$desc,'public'=>false]),
-                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
-            $pl = json_decode(curl_exec($ch),true); curl_close($ch);
-            if(empty($pl['id'])) jsonOut(['ok'=>false,'error'=>'Não foi possível criar a playlist.']);
-            $playlistId = $pl['id'];
-            foreach(array_chunk($uris, 100) as $chunk){
-                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
-                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
-                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
-                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
-                curl_exec($ch); curl_close($ch);
-            }
-        }
-
-        // Guardar spotify_id na tag
-        $db['tags'][$tid]['spotify_id'] = $playlistId;
-        saveDb($db);
-        $playlistUrl = "https://open.spotify.com/playlist/{$playlistId}";
-        jsonOut(['ok'=>true,'playlist_id'=>$playlistId,'playlist_url'=>$playlistUrl,'tracks'=>count($uris)]);
     }
 
     // ── Import de JSON enviado pelo cliente (upload) ──
@@ -415,6 +297,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             'duration_ms'=>(int)($_POST['duration_ms']??0),
             'tags'=>$tags,'key'=>trim($_POST['key']??''),
             'bpm'=>trim($_POST['bpm']??''),'rhythm'=>trim($_POST['rhythm']??''),
+            'capo'=>trim($_POST['capo']??''),
             'notes'=>trim($_POST['notes']??''),
         ];
         saveDb($db);
@@ -427,7 +310,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $uuid = trim($_POST['song_id']??'');
         if(!isset($db['songs'][$uuid])) jsonOut(['ok'=>false,'error'=>'Música não encontrada.']);
         $s = &$db['songs'][$uuid];
-        $fields = ['title','artist','cifra_url','cifra_source','spotify_url','spotify_uri','key','bpm','rhythm','notes'];
+        $fields = ['title','artist','cifra_url','cifra_source','spotify_url','spotify_uri','key','bpm','rhythm','capo','notes'];
         foreach($fields as $f){ if(isset($_POST[$f])) $s[$f] = trim($_POST[$f]); }
         if(isset($_POST['duration_ms'])) $s['duration_ms'] = (int)$_POST['duration_ms'];
         if(isset($_POST['tags'])){
@@ -791,6 +674,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
                     'key'          => '',
                     'bpm'          => '',
                     'rhythm'       => '',
+                    'capo'         => '',
                     'notes'        => '',
                 ];
                 $songKeyToUuid[$normKey] = $uuid;
@@ -933,14 +817,6 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .search-input::placeholder{color:var(--text3)}
 .filter-select{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;font-family:'DM Sans',sans-serif;font-size:.8rem;color:var(--text2);cursor:pointer;outline:none}
 .filter-select:focus{border-color:var(--border2)}
-.filter-tag-picker{position:relative}
-.tag-picker-dropdown{position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);min-width:220px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-.tpd-item{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:.78rem;color:var(--text1);cursor:pointer;transition:background var(--tr)}
-.tpd-item:hover{background:var(--bg3)}
-.tpd-item input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;flex-shrink:0}
-.tpd-item.exclude{color:var(--red,#e05)}
-.tpd-sep{height:1px;background:var(--border);margin:2px 0}
-.tpd-notag{font-style:italic;color:var(--text3)}
 
 /* ── TABLE ── */
 .table-wrap{border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;background:var(--bg2)}
@@ -997,7 +873,6 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 .tp-chip.sel-list{background:var(--accent-dim);color:var(--accent);border-color:var(--accent-glow)}
 .tp-chip.sel-custom{background:var(--purple-dim);color:var(--purple);border-color:rgba(167,139,250,.3)}
 .tp-chip.sel-musician{background:var(--orange-dim);color:var(--orange);border-color:rgba(251,146,60,.3)}
-.tp-chip.sel-exclude{background:rgba(220,38,38,.12);color:#f87171;border-color:rgba(220,38,38,.35);text-decoration:line-through}
 
 /* alerts */
 .alert{padding:10px 14px;border-radius:var(--r);font-size:.8rem;margin-bottom:14px;display:flex;align-items:center;gap:8px}
@@ -1159,19 +1034,19 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   .content{padding:0 0 80px}
   .table-wrap{border-radius:0;border-left:none;border-right:none}
   /* Colunas visíveis no mobile: drag(1, já oculto), #(2), Título(3), Duração(4) */
-  /* Ocultar: Tags(5), Tom(6), Ritmo(7), BPM(8), Acções(9) — mas NÃO em block-row (colspan) */
+  /* Ocultar: Tags(5), Tom(6), Ritmo(7), BPM(8), Acções(9) */
   table thead th:nth-child(1),
-  table tbody tr:not(.block-row) td:nth-child(1){display:none}
+  table tbody td:nth-child(1){display:none} /* drag — já oculto mas garantir */
   table thead th:nth-child(2),
-  table tbody tr:not(.block-row) td:nth-child(2){display:none}
+  table tbody td:nth-child(2){display:none} /* # */
   table thead th:nth-child(5),
   table thead th:nth-child(6),
   table thead th:nth-child(7),
   table thead th:nth-child(8),
-  table tbody tr:not(.block-row) td:nth-child(5),
-  table tbody tr:not(.block-row) td:nth-child(6),
-  table tbody tr:not(.block-row) td:nth-child(7),
-  table tbody tr:not(.block-row) td:nth-child(8){display:none}
+  table tbody td:nth-child(5),
+  table tbody td:nth-child(6),
+  table tbody td:nth-child(7),
+  table tbody td:nth-child(8){display:none}
   th,td{padding:9px 8px;font-size:.78rem}
   .td-title{font-size:.82rem}
   .td-artist{font-size:.7rem}
@@ -1265,10 +1140,6 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     </div>
     <span class="saving" id="savingInd">Salvando…</span>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-      <button class="btn no-print" id="exportSpotifyBtn" onclick="openExportSpotify()" style="display:none;background:#1db954;border-color:#1db954;color:#000;font-weight:600">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
-        Exportar para Spotify
-      </button>
       <?php if(isAuthed()): ?>
       <button class="btn btn-primary no-print" onclick="openModal('addSongModal')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1340,14 +1211,15 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="search-input" id="searchInput" placeholder="Buscar por título ou artista…" oninput="applyFilters()">
       </div>
-      <div class="filter-tag-picker" id="filterTagPicker">
-        <button class="filter-select" id="filterTagBtn" onclick="toggleTagPicker(event)" style="cursor:pointer;text-align:left">Tags ▾</button>
-        <div class="tag-picker-dropdown" id="tagPickerDropdown" style="display:none">
-          <div id="tpdTagList" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px"></div>
-        </div>
-      </div>
+      <select class="filter-select" id="filterTag" onchange="applyFilters()">
+        <option value="">Todas as tags</option>
+      </select>
       <select class="filter-select" id="filterRhythm" onchange="applyFilters()">
         <option value="">Todos os ritmos</option>
+      </select>
+      <select class="filter-select" id="filterCapo" onchange="applyFilters()">
+        <option value="">Todos os Capos</option>
+        <?php for($c=1;$c<=12;$c++): ?><option value="<?=$c?>">Capo <?=$c?></option><?php endfor; ?>
       </select>
       <select class="filter-select" id="filterKey" onchange="applyFilters()">
         <option value="">Todas as tonalidades</option>
@@ -1379,6 +1251,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
             <th id="thDur" class="td-dur">Duração</th>
             <th>Tags</th>
             <th>Tom</th>
+            <th>Capo</th>
             <th>Ritmo</th>
             <th>BPM</th>
             <th class="td-actions no-print"></th>
@@ -1420,10 +1293,21 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
           </select>
         </div>
       </div>
+      <div class="fi-row fg">
+        <div style="flex:1"><label class="fl">Capo</label>
+          <select class="fi" id="asCapo" onchange="updateAsCapoFigura()">
+            <option value="">Sem Capo</option>
+            <?php for($c=1;$c<=12;$c++): ?><option value="<?=$c?>">Capo <?=$c?></option><?php endfor; ?>
+          </select>
+        </div>
+        <div style="flex:2;display:flex;align-items:flex-end">
+          <div id="asCapoFigura" style="padding:9px 12px;font-family:'DM Mono',monospace;font-size:.8rem;color:var(--text3);background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);width:100%">—</div>
+        </div>
+      </div>
       <div class="fg"><label class="fl">Tags</label>
         <div class="tags-picker" id="asTagsPicker"></div>
       </div>
-      <div class="fg"><label class="fl">URL Spotify</label><div style="display:flex;gap:6px"><input class="fi" id="asSpotify" placeholder="https://open.spotify.com/track/…" style="flex:1"><button type="button" class="btn btn-ghost" style="padding:6px 10px;font-size:.7rem;white-space:nowrap;flex-shrink:0" onclick="fetchSpotifyDuration(document.getElementById('asSpotify'),'asDuration')">🎵 Buscar duração</button></div></div>
+      <div class="fg"><label class="fl">URL Spotify</label><input class="fi" id="asSpotify" placeholder="https://open.spotify.com/track/…"></div>
       <div class="fg"><label class="fl">Duração manual <span style="color:var(--text3);font-weight:400">(mm:ss — só se não tiver Spotify)</span></label><input class="fi" id="asDuration" placeholder="Ex: 3:42" maxlength="7" style="font-family:'DM Mono',monospace"></div>
       <div class="fg"><label class="fl">Notas / Observações</label><textarea class="fi" id="asNotes" rows="2" placeholder="Observações sobre a música…"></textarea></div>
     </div>
@@ -1442,7 +1326,6 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     <div class="modal-body">
       <div id="editSongErr"></div>
       <input type="hidden" id="esId">
-      <input type="hidden" id="esSpotifyUri">
       <div class="fg"><label class="fl">Título *</label><input class="fi" id="esTitle"></div>
       <div class="fg"><label class="fl">Artista *</label><input class="fi" id="esArtist"></div>
       <div class="fi-row fg">
@@ -1460,10 +1343,22 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
           </select>
         </div>
       </div>
+      <div class="fi-row fg">
+        <div style="flex:1"><label class="fl">Capo</label>
+          <select class="fi" id="esCapo" onchange="updateEsCapoFigura()">
+            <option value="">Sem Capo</option>
+            <?php for($c=1;$c<=12;$c++): ?><option value="<?=$c?>">Capo <?=$c?></option><?php endfor; ?>
+          </select>
+        </div>
+        <div style="flex:2;display:flex;flex-direction:column;justify-content:flex-end">
+          <label class="fl">Figura (calculada)</label>
+          <div id="esCapoFigura" style="padding:9px 12px;font-family:'DM Mono',monospace;font-size:.8rem;color:var(--accent);background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);width:100%">—</div>
+        </div>
+      </div>
       <div class="fg"><label class="fl">Tags</label>
         <div class="tags-picker" id="esTagsPicker"></div>
       </div>
-      <div class="fg"><label class="fl">URL Spotify</label><div style="display:flex;gap:6px"><input class="fi" id="esSpotify" style="flex:1"><button type="button" class="btn btn-ghost" style="padding:6px 10px;font-size:.7rem;white-space:nowrap;flex-shrink:0" onclick="fetchSpotifyDuration(document.getElementById('esSpotify'),'esDuration')">🎵 Buscar duração</button></div></div>
+      <div class="fg"><label class="fl">URL Spotify</label><input class="fi" id="esSpotify"></div>
       <div class="fg"><label class="fl">Duração manual <span style="color:var(--text3);font-weight:400">(mm:ss — sobreposta pelo Spotify se existir)</span></label><input class="fi" id="esDuration" placeholder="Ex: 3:42" maxlength="7" style="font-family:'DM Mono',monospace"></div>
       <div class="fg"><label class="fl">Notas</label><textarea class="fi" id="esNotes" rows="2"></textarea></div>
     </div>
@@ -1612,53 +1507,27 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <div id="printBpmChips" class="print-tag-sel-wrap"></div>
         <div id="printBpmChipsEmpty" style="font-size:.7rem;color:var(--text3);display:none;padding:3px 2px">Nenhum BPM definido nas músicas desta lista.</div>
       </div>
+
+      <div class="fg">
+        <label class="fl" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Capo a mostrar <span style="color:var(--text3);font-weight:400">(nenhum = coluna oculta)</span></span>
+          <button class="btn btn-ghost" style="padding:1px 7px;font-size:.65rem" onclick="toggleAllPrintChips('printCapoChips')">Todas/Nenhuma</button>
+        </label>
+        <div id="printCapoChips" class="print-tag-sel-wrap"></div>
+        <div id="printCapoChipsEmpty" style="font-size:.7rem;color:var(--text3);display:none;padding:3px 2px">Nenhum Capo definido nas músicas desta lista.</div>
+      </div>
+
+      <div class="fg">
+        <label class="fl">Figura (acorde com Capo)</label>
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:.8rem;color:var(--text2);cursor:pointer">
+          <input type="checkbox" id="printShowFigura" style="width:15px;height:15px;cursor:pointer">
+          Mostrar coluna "Figura" (tom real tocado com capo)
+        </label>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('printModal')">Cancelar</button>
       <button class="btn btn-primary" onclick="doPrint()">Imprimir / PDF</button>
-    </div>
-  </div>
-</div>
-
-<!-- Spotify Export Modal -->
-<div class="modal-overlay" id="spotifyExportModal">
-  <div class="modal" style="max-width:480px">
-    <div class="modal-title" style="display:flex;align-items:center;gap:10px">
-      <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
-      Exportar para Spotify
-    </div>
-    <div class="modal-body">
-      <div id="spotifyExportErr"></div>
-      <div id="spotifyExportInfo" style="font-size:.8rem;color:var(--text2);margin-bottom:14px"></div>
-      <!-- Passo 1: autorizar -->
-      <div id="seStep1">
-        <div style="font-size:.8rem;color:var(--text2);margin-bottom:12px">Para criar ou actualizar a playlist na tua conta Spotify, precisas autorizar o acesso uma vez. O token é usado apenas nesta sessão.</div>
-        <button class="btn" style="background:#1db954;border-color:#1db954;color:#000;width:100%;font-weight:600" onclick="startSpotifyAuth()">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
-          Autorizar com Spotify
-        </button>
-        <div id="seAuthWaiting" style="display:none;text-align:center;padding:14px 0;font-size:.8rem;color:var(--text3)">
-          A aguardar autorização na janela que abriu…<br>
-          <button class="btn btn-ghost" style="margin-top:10px;font-size:.72rem" onclick="checkSpotifyAuthManual()">Já autorizei — continuar</button>
-        </div>
-      </div>
-      <!-- Passo 2: confirmar exportação -->
-      <div id="seStep2" style="display:none">
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;margin-bottom:14px">
-          <svg viewBox="0 0 24 24" fill="#1db954" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
-          <span style="font-size:.78rem;color:#1db954" id="seAuthedAs">Conta autorizada</span>
-        </div>
-        <div id="seExistingPlaylist" style="display:none;font-size:.78rem;color:var(--text2);margin-bottom:10px"></div>
-        <div id="seTrackWarning" style="display:none;font-size:.75rem;color:var(--gold);padding:6px 10px;background:rgba(240,196,25,.08);border:1px solid rgba(240,196,25,.25);border-radius:6px;margin-bottom:10px"></div>
-        <div id="seExportResult" style="display:none"></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('spotifyExportModal')">Fechar</button>
-      <button class="btn" id="seExportBtn" style="display:none;background:#1db954;border-color:#1db954;color:#000;font-weight:600" onclick="doExportToSpotify()">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.102 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
-        <span id="seExportBtnLabel">Criar Playlist</span>
-      </button>
     </div>
   </div>
 </div>
@@ -1675,14 +1544,21 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 </div>
 
 <!-- Login Modal -->
+
 <?php if(isLocked() && !isAuthed()): ?>
 <div class="modal-overlay open" id="loginModal">
   <div class="modal" style="max-width:360px">
     <div class="modal-title">SetList V2</div>
     <div class="modal-sub">Acesso protegido por senha.</div>
     <div class="modal-body">
-      <div id="loginErr" style="min-height:0"></div>
-      <div class="fg"><label class="fl">Senha</label><input class="fi" type="password" id="loginPwd" onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <div id="loginErr" style="color: red; margin-bottom: 10px; font-weight: bold;"></div>
+      
+      <form onsubmit="event.preventDefault(); doLogin();">
+        <div class="fg">
+          <label class="fl">Senha</label>
+          <input class="fi" type="password" id="loginPwd" autocomplete="current-password">
+        </div>
+      </form>
     </div>
     <div class="modal-footer">
       <button class="btn btn-primary" onclick="doLogin()">Entrar</button>
@@ -1771,9 +1647,8 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 <div class="bulk-bar" id="bulkBar">
   <span class="bulk-count" id="bulkCount">0 selecionadas</span>
   <div class="bulk-actions">
-    <button class="btn btn-ghost" onclick="selectAllVisible()" title="Selecionar todas as músicas visíveis">☑ Todas</button>
-    <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag</button>
-    <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag</button>
+    <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
+    <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
     <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
   </div>
   <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
@@ -1802,8 +1677,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="bulkAddErr" class="form-err"></div>
       <div class="fg">
         <label class="fl">Escolhe uma ou mais tags para adicionar</label>
-        <p id="bulkAddCount" style="font-size:.72rem;color:var(--text3);margin:0 0 8px"></p>
-        <div id="bulkAddTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow-y:auto;padding:4px"></div>
+        <div id="bulkAddTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1821,8 +1695,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="bulkRemoveErr" class="form-err"></div>
       <div class="fg">
         <label class="fl">Escolhe uma ou mais tags para remover</label>
-        <p id="bulkRemoveCount" style="font-size:.72rem;color:var(--text3);margin:0 0 8px"></p>
-        <div id="bulkRemoveTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow-y:auto;padding:4px"></div>
+        <div id="bulkRemoveTagsPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow-y:auto;padding:4px"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1914,7 +1787,7 @@ function renderSidebar(){
   const today = new Date().toISOString().slice(0,10);
   const allEvents = activeTags.filter(t=>t.type==='event');
   const futureEvents = allEvents.filter(t=>!t.event_date || t.event_date >= today)
-    .sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999')); // mais próximo primeiro
+    .sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999'));
   const pastEvents = allEvents.filter(t=>t.event_date && t.event_date < today)
     .sort((a,b)=>b.event_date.localeCompare(a.event_date)); // mais recente primeiro
   const lists = activeTags.filter(t=>t.type==='list');
@@ -1925,7 +1798,7 @@ function renderSidebar(){
   function tagSection(label, tagArr, dotClass, isEvent){
     if(!tagArr.length) return '';
     let h = `<div style="font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text3);padding:10px 8px 4px">${label}</div>`;
-    const arr = tagArr;
+    const arr = isEvent ? [...tagArr].sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||'')) : tagArr;
     arr.forEach(t => {
       const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
       const isAct = activeTagFilter===t.id;
@@ -1943,11 +1816,11 @@ function renderSidebar(){
   }
 
   html += tagSection('Próximos Eventos', futureEvents, 'type-event', true);
-  html += tagSection('Eventos Passados', pastEvents, 'type-event', true);
   html += tagSection('Listas', lists, 'type-list');
   html += tagSection('Músicos', musicians, 'type-musician');
   html += tagSection('Status', statuses, 'type-custom');
   html += tagSection('Tags', customs, 'type-custom');
+  html += tagSection('Eventos Passados', pastEvents, 'type-event', true);
 
   document.getElementById('tagList').innerHTML = html;
   const totalEl = document.getElementById('totalCount');
@@ -1959,8 +1832,12 @@ function renderFilterDropdowns(){
   const rhythmsInUse = [...new Set(Object.values(DB.songs||{}).map(s=>s.rhythm).filter(Boolean))];
   const keysInUse    = [...new Set(Object.values(DB.songs||{}).map(s=>s.key).filter(Boolean))];
 
-  // Tag picker — chips igual aos modais de bulk/add song
-  renderFilterTagPicker();
+  // Tag filter (tags arquivadas não aparecem)
+  let tHtml = '<option value="">Todas as tags</option>';
+  Object.values(tags).filter(t=>!t.archived).forEach(t => {
+    tHtml += `<option value="${t.id}">${escH(t.name)}</option>`;
+  });
+  document.getElementById('filterTag').innerHTML = tHtml;
 
   // Rhythm filter
   let rHtml = '<option value="">Todos os ritmos</option>';
@@ -1988,32 +1865,22 @@ function setTagFilter(tid){
 }
 
 function applyFilters(){
-  const q       = document.getElementById('searchInput').value.toLowerCase().trim();
-  const fRhythm = document.getElementById('filterRhythm').value;
-  const fKey    = document.getElementById('filterKey').value;
-  const sortBy  = document.getElementById('sortBy').value;
-  const noTag      = document.getElementById('tpdNoTagChip')?.classList.contains('sel-custom');
-  const includeTags = [...document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip).sel-list, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-custom, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-musician')].map(c=>c.dataset.tid);
-  const excludeTags = [...document.querySelectorAll('#tpdTagList .tp-chip.sel-exclude')].map(c=>c.dataset.tid);
-
-  // Atualizar label do botão
-  const total = includeTags.length + excludeTags.length + (noTag?1:0);
-  const btn = document.getElementById('filterTagBtn');
-  if(btn) btn.textContent = total ? `Tags (${total}) ▾` : 'Tags ▾';
+  const q      = document.getElementById('searchInput').value.toLowerCase().trim();
+  const fTag   = document.getElementById('filterTag').value;
+  const fRhythm= document.getElementById('filterRhythm').value;
+  const fCapo  = document.getElementById('filterCapo').value;
+  const fKey   = document.getElementById('filterKey').value;
+  const sortBy = document.getElementById('sortBy').value;
 
   let songs = Object.values(DB.songs || {}).filter(isSongVisible);
 
-  // Tag filter (sidebar) — obrigatória
+  // Tag filter (sidebar)
   if(activeTagFilter) songs = songs.filter(s=>(s.tags||[]).includes(activeTagFilter));
 
-  // "Sem tag nenhuma" — só quando não há activeTagFilter
-  if(noTag && !activeTagFilter){
-    songs = songs.filter(s=>!(s.tags||[]).length);
-  } else {
-    includeTags.forEach(tid => { songs = songs.filter(s=>(s.tags||[]).includes(tid)); });
-    excludeTags.forEach(tid => { songs = songs.filter(s=>!(s.tags||[]).includes(tid)); });
-  }
+  // Additional filters
+  if(fTag)    songs = songs.filter(s=>(s.tags||[]).includes(fTag));
   if(fRhythm) songs = songs.filter(s=>s.rhythm===fRhythm);
+  if(fCapo)   songs = songs.filter(s=>String(s.capo||'')===fCapo);
   if(fKey)    songs = songs.filter(s=>s.key===fKey);
   if(q)       songs = songs.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q));
 
@@ -2021,7 +1888,7 @@ function applyFilters(){
   // O sortBy do dropdown é IGNORADO quando há ordem personalizada — nunca destrói a ordem guardada
   const activeTag = activeTagFilter ? DB.tags[activeTagFilter] : null;
   const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
-  const hasExtraFilters = !!(includeTags.length || excludeTags.length || noTag || fRhythm || fKey || q);
+  const hasExtraFilters = !!(fTag || fRhythm || fCapo || fKey || q);
   const isOrderMode = hasCustomOrder && !hasExtraFilters;
 
   if(isOrderMode){
@@ -2074,8 +1941,6 @@ function applyFilters(){
   } else {
     durCard.style.display = 'none';
   }
-
-  updateExportSpotifyBtn();
 }
 
 // ── Formatação de duração ─────────────────────────────────────────
@@ -2094,6 +1959,24 @@ function fmtDuration(ms, long){
   // "3:42" ou "1:03:42"
   if(h) return h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
   return m+':'+String(s).padStart(2,'0');
+}
+
+// ── Capo: calcula a figura do acorde ─────────────────────────────
+// Ordem cromática: índice 0 = C, segue semitons ascendentes
+const CHROMATIC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const CHROMATIC_M = ['Cm','C#m','Dm','D#m','Em','Fm','F#m','Gm','G#m','Am','A#m','Bm'];
+
+function capoFigura(key, capo){
+  if(!key || !capo) return '';
+  const c = parseInt(capo);
+  if(!c || c < 1 || c > 12) return '';
+  const isMinor = key.endsWith('m') && key.length > 1;
+  const arr = isMinor ? CHROMATIC_M : CHROMATIC;
+  const idx = arr.indexOf(key);
+  if(idx === -1) return '';
+  // Figura = tom original transposto PARA BAIXO pelo nº de semitons do capo
+  const figIdx = ((idx - c) % 12 + 12) % 12;
+  return arr[figIdx];
 }
 
 function renderTable(songs, canOrder){
@@ -2169,6 +2052,8 @@ function renderTable(songs, canOrder){
     });
 
     const keyHtml  = s.key    ? `<span class="chip chip-key">${escH(s.key)}</span>` : '';
+    const figura   = capoFigura(s.key, s.capo);
+    const capoHtml = s.capo   ? `<span class="chip chip-bpm" title="${figura?'Figura: '+figura:''}">Capo ${escH(String(s.capo))}${figura?' <span style="opacity:.6;font-size:.85em">≈ '+escH(figura)+'</span>':''}</span>` : '';
     const bpmHtml  = s.bpm    ? `<span class="chip chip-bpm">${escH(s.bpm)} bpm</span>` : '';
     const rHtml    = s.rhythm ? `<span class="chip chip-rhythm">${escH(s.rhythm)}</span>` : '';
     const spotHtml = s.spotify_url ? `<a href="${s.spotify_url}" target="_blank" class="spot-link"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>Spotify</a>` : '';
@@ -2199,7 +2084,7 @@ function renderTable(songs, canOrder){
       </td>
       ${durTd}
       <td><div style="display:flex;flex-wrap:wrap;gap:4px">${tagsHtml}</div></td>
-      <td>${keyHtml}</td><td>${rHtml}</td><td>${bpmHtml}</td>
+      <td>${keyHtml}</td><td>${capoHtml}</td><td>${rHtml}</td><td>${bpmHtml}</td>
       <td class="td-actions no-print"><div class="td-actions-inner">${editBtn}</div></td>
     </tr>`;
 
@@ -2437,14 +2322,6 @@ function toggleSongSelection(sid){
   updateBulkBar();
 }
 
-function selectAllVisible(){
-  document.querySelectorAll('tr.song-row').forEach(row => {
-    const sid = row.dataset.id;
-    if(sid){ selectedSongIds.add(sid); row.classList.add('selected'); }
-  });
-  updateBulkBar();
-}
-
 function clearSelection(){
   selectedSongIds.clear();
   document.querySelectorAll('tr.song-row.selected').forEach(r => r.classList.remove('selected'));
@@ -2463,7 +2340,6 @@ function openBulkTagModal(){
   if(!selectedSongIds.size) return;
   renderTagsPicker('bulkAddTagsPicker', []);
   document.getElementById('bulkAddErr').textContent = '';
-  document.getElementById('bulkAddCount').textContent = `${selectedSongIds.size} música(s) selecionada(s)`;
   openModal('bulkAddModal');
 }
 
@@ -2471,25 +2347,40 @@ function openBulkRemoveModal(){
   if(!selectedSongIds.size) return;
   renderTagsPicker('bulkRemoveTagsPicker', []);
   document.getElementById('bulkRemoveErr').textContent = '';
-  document.getElementById('bulkRemoveCount').textContent = `${selectedSongIds.size} música(s) selecionada(s)`;
   openModal('bulkRemoveModal');
 }
 
 function submitBulkAdd(){
-  const ids = getSelectedTags('bulkAddTagsPicker');
-  if(!ids.length){ showErr('bulkAddErr','Escolhe pelo menos uma tag.'); return; }
-  post({ _action:'bulk_tag', song_ids:JSON.stringify([...selectedSongIds]), add_tags:JSON.stringify(ids), remove_tags:'[]' }, function(r){
-    if(r.ok){ closeModal('bulkAddModal'); showToast(r.changed+' música(s) actualizada(s)!'); loadDbFromServer(); }
-    else showErr('bulkAddErr', r.error||'Erro.');
+  const addIds = getSelectedTags('bulkAddTagsPicker');
+  if(!addIds.length){ showErr('bulkAddErr','Escolhe pelo menos uma tag.'); return; }
+  post({
+    _action: 'bulk_tag',
+    song_ids: JSON.stringify([...selectedSongIds]),
+    add_tags: JSON.stringify(addIds),
+    remove_tags: '[]'
+  }, function(r){
+    if(r.ok){
+      closeModal('bulkAddModal');
+      showToast(r.changed + ' música(s) atualizada(s)!');
+      loadDbFromServer();
+    } else showErr('bulkAddErr', r.error || 'Erro.');
   });
 }
 
 function submitBulkRemove(){
-  const ids = getSelectedTags('bulkRemoveTagsPicker');
-  if(!ids.length){ showErr('bulkRemoveErr','Escolhe pelo menos uma tag.'); return; }
-  post({ _action:'bulk_tag', song_ids:JSON.stringify([...selectedSongIds]), add_tags:'[]', remove_tags:JSON.stringify(ids) }, function(r){
-    if(r.ok){ closeModal('bulkRemoveModal'); showToast(r.changed+' música(s) actualizada(s)!'); loadDbFromServer(); }
-    else showErr('bulkRemoveErr', r.error||'Erro.');
+  const removeIds = getSelectedTags('bulkRemoveTagsPicker');
+  if(!removeIds.length){ showErr('bulkRemoveErr','Escolhe pelo menos uma tag.'); return; }
+  post({
+    _action: 'bulk_tag',
+    song_ids: JSON.stringify([...selectedSongIds]),
+    add_tags: '[]',
+    remove_tags: JSON.stringify(removeIds)
+  }, function(r){
+    if(r.ok){
+      closeModal('bulkRemoveModal');
+      showToast(r.changed + ' música(s) atualizada(s)!');
+      loadDbFromServer();
+    } else showErr('bulkRemoveErr', r.error || 'Erro.');
   });
 }
 
@@ -2573,7 +2464,14 @@ function getSelectedTags(containerId){
 // ── Add Song ──────────────────────────────────────────────────────
 function openModal(id){
   // Populate rhythm selects dynamically
-  if(id==='addSongModal'){ renderTagsPicker('asTagsPicker',[]); populateRhythmSelects(); }
+  if(id==='addSongModal'){
+    renderTagsPicker('asTagsPicker',[]);
+    populateRhythmSelects();
+    document.getElementById('asKey').onchange = updateAsCapoFigura;
+    document.getElementById('asCapo').value = '';
+    document.getElementById('asCapoFigura').textContent = '—';
+    document.getElementById('asCapoFigura').style.color = 'var(--text3)';
+  }
   // Reset spotify import modal
   if(id==='spotifyImportModal'){
     document.getElementById('siInput').value = '';
@@ -2602,6 +2500,26 @@ function populateRhythmSelects(){
   });
 }
 
+function _showCapoFigura(keyId, capoId, figId){
+  const key  = document.getElementById(keyId)?.value || '';
+  const capo = document.getElementById(capoId)?.value || '';
+  const fig  = capoFigura(key, capo);
+  const el   = document.getElementById(figId);
+  if(!el) return;
+  if(fig){
+    el.textContent = `Figura: ${fig}`;
+    el.style.color = 'var(--accent)';
+  } else if(capo && !key){
+    el.textContent = 'Seleciona a tonalidade para calcular a figura';
+    el.style.color = 'var(--text3)';
+  } else {
+    el.textContent = '—';
+    el.style.color = 'var(--text3)';
+  }
+}
+function updateAsCapoFigura(){ _showCapoFigura('asKey','asCapo','asCapoFigura'); }
+function updateEsCapoFigura(){ _showCapoFigura('esKey','esCapo','esCapoFigura'); }
+
 function submitAddSong(){
   const title  = document.getElementById('asTitle').value.trim();
   const artist = document.getElementById('asArtist').value.trim();
@@ -2613,6 +2531,7 @@ function submitAddSong(){
     _action:'add_song', title, artist,
     key: document.getElementById('asKey').value,
     bpm: document.getElementById('asBpm').value,
+    capo: document.getElementById('asCapo').value,
     rhythm: document.getElementById('asRhythm').value,
     spotify_url: spotifyUrl,
     duration_ms: durMs,
@@ -2648,7 +2567,6 @@ function openEditSong(uuid){
   const s = DB.songs[uuid];
   if(!s) return;
   document.getElementById('esId').value = uuid;
-  document.getElementById('esSpotifyUri').value = s.spotify_uri||'';
   document.getElementById('esTitle').value  = s.title||'';
   document.getElementById('esArtist').value = s.artist||'';
   document.getElementById('esBpm').value    = s.bpm||'';
@@ -2658,9 +2576,12 @@ function openEditSong(uuid){
   document.getElementById('editSongSub').textContent = s.title;
   renderTagsPicker('esTagsPicker', s.tags||[]);
   populateRhythmSelects();
+  document.getElementById('esKey').onchange = updateEsCapoFigura;
   setTimeout(()=>{
     document.getElementById('esKey').value    = s.key||'';
     document.getElementById('esRhythm').value = s.rhythm||'';
+    document.getElementById('esCapo').value   = s.capo||'';
+    updateEsCapoFigura();
   },50);
   clearErr('editSongErr');
   document.getElementById('editSongModal').classList.add('open');
@@ -2672,19 +2593,21 @@ function submitEditSong(){
   const artist = document.getElementById('esArtist').value.trim();
   if(!title||!artist){ showErr('editSongErr','Título e artista obrigatórios.'); return; }
   const tags = getSelectedTags('esTagsPicker');
-  const spotifyUrl = document.getElementById('esSpotify').value.trim();
-  const spotifyUri = document.getElementById('esSpotifyUri').value.trim();
-  // Duração: usa o campo (pode ter sido preenchido pelo fetch Spotify ou manualmente)
+  const spotifyUrl = document.getElementById('esSpotify').value;
+  // Duração: Spotify tem prioridade; manual só entra se não houver spotify_url e campo preenchido
   const existingSong = DB.songs[uuid]||{};
-  const manualDur = parseDurationInput(document.getElementById('esDuration').value);
-  const durMs = manualDur || existingSong.duration_ms || 0;
+  let durMs = existingSong.duration_ms||0;
+  if(!spotifyUrl){
+    const manual = parseDurationInput(document.getElementById('esDuration').value);
+    if(manual) durMs = manual;
+  }
   post({
     _action:'edit_song', song_id: uuid, title, artist,
     key: document.getElementById('esKey').value,
     bpm: document.getElementById('esBpm').value,
+    capo: document.getElementById('esCapo').value,
     rhythm: document.getElementById('esRhythm').value,
     spotify_url: spotifyUrl,
-    spotify_uri: spotifyUri,
     duration_ms: durMs,
     notes: document.getElementById('esNotes').value,
     tags: JSON.stringify(tags)
@@ -2855,6 +2778,7 @@ function copyListToClipboard(){
   const q       = document.getElementById('searchInput').value.toLowerCase().trim();
   const fTag    = document.getElementById('filterTag').value;
   const fRhythm = document.getElementById('filterRhythm').value;
+  const fCapo   = document.getElementById('filterCapo').value;
   const fKey    = document.getElementById('filterKey').value;
   const sortBy  = document.getElementById('sortBy').value;
 
@@ -2862,13 +2786,14 @@ function copyListToClipboard(){
   if(activeTagFilter) visible = visible.filter(s=>(s.tags||[]).includes(activeTagFilter));
   if(fTag)    visible = visible.filter(s=>(s.tags||[]).includes(fTag));
   if(fRhythm) visible = visible.filter(s=>s.rhythm===fRhythm);
+  if(fCapo)   visible = visible.filter(s=>String(s.capo||'')===fCapo);
   if(fKey)    visible = visible.filter(s=>s.key===fKey);
   if(q)       visible = visible.filter(s=>(s.title||'').toLowerCase().includes(q)||(s.artist||'').toLowerCase().includes(q));
 
   // Respeita ordem personalizada (mesma lógica do applyFilters)
   const activeTag = activeTagFilter ? tags[activeTagFilter] : null;
   const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
-  const hasExtraFilters = !!(fTag || fRhythm || fKey || q);
+  const hasExtraFilters = !!(fTag || fRhythm || fCapo || fKey || q);
   if(hasCustomOrder && !hasExtraFilters){
     const orderMap = {};
     (activeTag.song_order||[]).forEach((id, i) => { orderMap[id] = i; });
@@ -2921,30 +2846,35 @@ function copyListToClipboard(){
 
   const text = lines.join('\n');
 
+  // Clipboard API (funciona em Android Chrome e desktop)
   if(navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(text).then(()=>{
       showToast('Lista copiada! (' + visible.length + ' músicas)');
     }).catch(()=>{
-      fallbackCopy(text);
+      fallbackCopy(text, visible.length);
     });
   } else {
-    fallbackCopy(text);
+    fallbackCopy(text, visible.length);
   }
 }
 
-function fallbackCopy(text){
+function fallbackCopy(text, count){
+  // Funciona em iOS Safari (requer focus + setSelectionRange em vez de select())
   const ta = document.createElement('textarea');
   ta.value = text;
-  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:none;outline:none;box-shadow:none;background:transparent;opacity:0';
   document.body.appendChild(ta);
-  ta.select();
-  try {
-    document.execCommand('copy');
-    showToast('Lista copiada para o clipboard!');
-  } catch(e){
-    showToast('Não foi possível copiar. Tenta manualmente.', true);
-  }
+  ta.focus();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch(e){}
   document.body.removeChild(ta);
+  if(ok){
+    showToast('Lista copiada! (' + (count||'') + ' músicas)');
+  } else {
+    showToast('Não foi possível copiar automaticamente.', true);
+  }
 }
 
 // ── Importar do Spotify ───────────────────────────────────────────
@@ -3011,293 +2941,6 @@ function doImportOriginals(){
     reader.readAsText(file);
   };
   input.click();
-}
-
-// ── Ler duração da track Spotify ao vincular ──────────────────────
-// Feito inteiramente no browser (evita limitações de curl no servidor)
-const _spotClientId     = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: '') ?>';
-const _spotClientSecret = '<?= addslashes(envVal('CLIENT_SECRET') ?: envVal('SPOTIPY_CLIENT_SECRET') ?: '') ?>';
-let _spotClientToken = null;
-
-async function getSpotClientToken(){
-  if(_spotClientToken) return _spotClientToken;
-  if(!_spotClientId || !_spotClientSecret) return null;
-  try {
-    const r = await fetch('https://accounts.spotify.com/api/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': 'Basic ' + btoa(_spotClientId + ':' + _spotClientSecret)
-      },
-      body: 'grant_type=client_credentials'
-    });
-    const data = await r.json();
-    _spotClientToken = data.access_token || null;
-    return _spotClientToken;
-  } catch(e){ return null; }
-}
-
-async function fetchSpotifyDuration(inputEl, durFieldId){
-  const url = (inputEl.value||'').trim();
-  if(!url) return;
-  const m = url.match(/track\/([A-Za-z0-9]+)/);
-  if(!m){ showToast('URL de track inválido.', true); return; }
-  const trackId = m[1];
-  const durEl = document.getElementById(durFieldId);
-  const btnEl = inputEl.parentElement.querySelector('button');
-  const origLabel = btnEl ? btnEl.textContent : '';
-  if(btnEl){ btnEl.disabled = true; btnEl.textContent = 'A buscar…'; }
-
-  try {
-    // Tenta com user token primeiro (se disponível), senão client credentials
-    const token = _spotifyUserToken || await getSpotClientToken();
-    if(!token){ showToast('Sem token Spotify disponível.', true); return; }
-    const r = await fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if(!r.ok){ showToast('Track não encontrada no Spotify.', true); return; }
-    const data = await r.json();
-    if(data.duration_ms){
-      durEl.value = fmtDuration(data.duration_ms);
-      durEl.style.color = '#1db954';
-      setTimeout(()=>{ durEl.style.color=''; }, 2000);
-      // Guardar URI
-      const uriEl = document.getElementById('esSpotifyUri');
-      if(uriEl && data.uri) uriEl.value = data.uri;
-      showToast('Duração obtida do Spotify!');
-    }
-  } catch(e){
-    showToast('Erro ao contactar Spotify.', true);
-  } finally {
-    if(btnEl){ btnEl.disabled = false; btnEl.textContent = origLabel; }
-  }
-}
-
-// ── Exportar tag/lista para Spotify ──────────────────────────────
-let _spotifyUserToken = null;
-let _spotifyAuthWindow = null;
-let _spotifyAuthInterval = null;
-const SPOTIFY_SCOPES = 'playlist-modify-private playlist-modify-public';
-
-function openExportSpotify(){
-  if(!activeTagFilter){ showToast('Seleciona uma lista ou evento primeiro.', true); return; }
-  const tag = (DB.tags||{})[activeTagFilter];
-  if(!tag){ showToast('Tag não encontrada.', true); return; }
-
-  // Info da tag
-  const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
-  const withSpotify = songs.filter(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
-  document.getElementById('spotifyExportInfo').innerHTML =
-    `<strong>${escH(tag.name)}</strong> — ${songs.length} músicas, ${withSpotify.length} com link Spotify`;
-
-  const existing = tag.spotify_id||'';
-  document.getElementById('seExistingPlaylist').style.display = existing ? '' : 'none';
-  if(existing){
-    document.getElementById('seExistingPlaylist').innerHTML =
-      `Playlist já vinculada: <a href="https://open.spotify.com/playlist/${escH(existing)}" target="_blank" style="color:#1db954">abrir no Spotify</a>. Será <strong>substituída</strong> pelas músicas actuais.`;
-    document.getElementById('seExportBtnLabel').textContent = 'Actualizar Playlist';
-  } else {
-    document.getElementById('seExportBtnLabel').textContent = 'Criar Playlist';
-  }
-
-  if(withSpotify.length < songs.length){
-    const missing = songs.length - withSpotify.length;
-    document.getElementById('seTrackWarning').style.display = '';
-    document.getElementById('seTrackWarning').textContent =
-      `⚠ ${missing} música${missing>1?'s':''} sem link Spotify ${missing>1?'serão ignoradas':'será ignorada'}.`;
-  } else {
-    document.getElementById('seTrackWarning').style.display = 'none';
-  }
-
-  document.getElementById('spotifyExportErr').innerHTML = '';
-  document.getElementById('seExportResult').style.display = 'none';
-
-  // Se já temos token, vai directo para passo 2
-  if(_spotifyUserToken){
-    showSeStep2();
-  } else {
-    document.getElementById('seStep1').style.display = '';
-    document.getElementById('seAuthWaiting').style.display = 'none';
-    document.getElementById('seStep2').style.display = 'none';
-    document.getElementById('seExportBtn').style.display = 'none';
-  }
-  openModal('spotifyExportModal');
-}
-
-async function startSpotifyAuth(){
-  const clientId = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: getenv('CLIENT_ID') ?: '') ?>';
-  if(!clientId){ showErr('spotifyExportErr','CLIENT_ID não configurado no .env.'); return; }
-  // Usar exactamente a mesma URI que o PHP usa no callback (evita mismatch)
-  const redirectUri = '<?= addslashes(spotifyRedirectUri()) ?>';
-
-  // Gerar PKCE code_verifier e code_challenge
-  const verifier = generateCodeVerifier();
-  const challenge = await generateCodeChallenge(verifier);
-  sessionStorage.setItem('spotify_pkce_verifier', verifier);
-
-  const state = Math.random().toString(36).slice(2);
-  sessionStorage.setItem('spotify_oauth_state', state);
-  const params = new URLSearchParams({
-    response_type:'code', client_id:clientId,
-    scope:SPOTIFY_SCOPES, redirect_uri:redirectUri,
-    state, code_challenge_method:'S256', code_challenge:challenge
-  });
-  const authUrl = 'https://accounts.spotify.com/authorize?' + params;
-  _spotifyAuthWindow = window.open(authUrl, 'spotify_auth', 'width=480,height=640');
-  document.getElementById('seAuthWaiting').style.display = '';
-  _spotifyAuthInterval = setInterval(checkSpotifyAuthAuto, 1000);
-}
-
-function generateCodeVerifier(){
-  const arr = new Uint8Array(64);
-  crypto.getRandomValues(arr);
-  return btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-
-async function generateCodeChallenge(verifier){
-  const data = new TextEncoder().encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-
-function spotifyAuthError(msg){
-  showErr('spotifyExportErr', 'Erro de autorização Spotify: ' + msg);
-  document.getElementById('seAuthWaiting').style.display = 'none';
-  clearInterval(_spotifyAuthInterval);
-}
-
-function checkSpotifyAuthAuto(){
-  try {
-    if(!_spotifyAuthWindow || _spotifyAuthWindow.closed){
-      clearInterval(_spotifyAuthInterval);
-      checkSpotifyAuthManual();
-      return;
-    }
-    const hash = _spotifyAuthWindow.location.hash;
-    if(hash && hash.includes('access_token')){
-      extractSpotifyToken(_spotifyAuthWindow.location.href);
-      _spotifyAuthWindow.close();
-      clearInterval(_spotifyAuthInterval);
-    }
-  } catch(e){ /* cross-origin durante redirect — normal */ }
-}
-
-function checkSpotifyAuthManual(){
-  clearInterval(_spotifyAuthInterval);
-  // Tenta ler da sessionStorage (a callback page vai guardar lá)
-  const token = sessionStorage.getItem('spotify_access_token');
-  if(token){ _spotifyUserToken = token; showSeStep2(); }
-  else showErr('spotifyExportErr','Autorização não detectada. Tenta novamente.');
-}
-
-function extractSpotifyToken(token){
-  if(token){
-    _spotifyUserToken = token;
-    sessionStorage.setItem('spotify_access_token', token);
-    showSeStep2();
-  }
-}
-
-function showSeStep2(){
-  document.getElementById('seStep1').style.display = 'none';
-  document.getElementById('seStep2').style.display = '';
-  document.getElementById('seExportBtn').style.display = '';
-  // Confirmar utilizador
-  fetch('https://api.spotify.com/v1/me',{headers:{Authorization:'Bearer '+_spotifyUserToken}})
-    .then(r=>r.json()).then(me=>{
-      if(me.id) document.getElementById('seAuthedAs').textContent = `Conta: ${me.display_name||me.id}`;
-      else { _spotifyUserToken=null; showErr('spotifyExportErr','Token inválido. Autoriza novamente.'); document.getElementById('seStep1').style.display=''; document.getElementById('seStep2').style.display='none'; document.getElementById('seExportBtn').style.display='none'; }
-    }).catch(()=>{});
-}
-
-function doExportToSpotify(){
-  if(!activeTagFilter||!_spotifyUserToken) return;
-  const btn = document.getElementById('seExportBtn');
-  const label = document.getElementById('seExportBtnLabel');
-  btn.disabled = true; label.textContent = 'A exportar…';
-  showSaving();
-  post({
-    _action:'export_tag_to_spotify',
-    tag_id: activeTagFilter,
-    user_token: _spotifyUserToken
-  }, function(r){
-    hideSaving();
-    btn.disabled = false;
-    if(r.ok){
-      label.textContent = 'Actualizar Playlist';
-      const el = document.getElementById('seExportResult');
-      el.style.display = '';
-      el.innerHTML = `<div style="padding:10px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;font-size:.8rem">
-        ✅ ${r.tracks} músicas exportadas!<br>
-        <a href="${escH(r.playlist_url)}" target="_blank" style="color:#1db954;font-weight:600">Abrir playlist no Spotify →</a>
-      </div>`;
-      document.getElementById('seExistingPlaylist').style.display = '';
-      document.getElementById('seExistingPlaylist').innerHTML =
-        `Playlist vinculada: <a href="${escH(r.playlist_url)}" target="_blank" style="color:#1db954">abrir no Spotify</a>`;
-      loadDbFromServer();
-      showToast(`Playlist exportada! ${r.tracks} músicas.`);
-    } else {
-      label.textContent = 'Tentar novamente';
-      showErr('spotifyExportErr', r.error||'Erro ao exportar.');
-    }
-  });
-}
-
-// Mostrar botão "Exportar para Spotify" quando tag activa tem músicas com Spotify
-function updateExportSpotifyBtn(){
-  const btn = document.getElementById('exportSpotifyBtn');
-  if(!btn) return;
-  if(!activeTagFilter){ btn.style.display='none'; return; }
-  const tag = (DB.tags||{})[activeTagFilter];
-  if(!tag){ btn.style.display='none'; return; }
-  const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
-  const hasSpotify = songs.some(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
-  btn.style.display = hasSpotify ? '' : 'none';
-}
-
-// ── Tag filter picker ─────────────────────────────────────────────
-function toggleTagPicker(e){
-  e.stopPropagation();
-  const dd = document.getElementById('tagPickerDropdown');
-  dd.style.display = dd.style.display !== 'none' ? 'none' : '';
-}
-function toggleNoTagFilter(el){
-  el.classList.toggle('sel-custom');
-  applyFilters();
-}
-document.addEventListener('click', function(e){
-  const picker = document.getElementById('tagPickerDropdown');
-  if(picker && picker.style.display !== 'none'){
-    if(!document.getElementById('filterTagPicker').contains(e.target)){
-      picker.style.display = 'none';
-    }
-  }
-});
-// Wrap renderTagsPicker chips in tpdTagList to also call applyFilters on toggle
-function renderFilterTagPicker(){
-  renderTagsPicker('tpdTagList', []);
-  const noTagChip = `<span class="tp-chip" id="tpdNoTagChip" onclick="toggleNoTagFilter(this)" style="font-style:italic">Sem tag</span>`;
-  document.getElementById('tpdTagList').insertAdjacentHTML('afterbegin', noTagChip);
-  // Override onclick: ciclo de 3 estados — neutro → incluir → excluir → neutro
-  document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip)').forEach(chip => {
-    chip.dataset.type = chip.dataset.type || 'custom';
-    chip.onclick = function(){ toggleFilterChip(this); applyFilters(); };
-  });
-}
-
-function toggleFilterChip(el){
-  const selCls = el.dataset.type==='list' ? 'sel-list' : el.dataset.type==='musician' ? 'sel-musician' : 'sel-custom';
-  if(el.classList.contains('sel-exclude')){
-    // excluir → neutro
-    el.classList.remove('sel-exclude');
-  } else if(el.classList.contains(selCls)){
-    // incluir → excluir
-    el.classList.remove(selCls);
-    el.classList.add('sel-exclude');
-  } else {
-    // neutro → incluir
-    el.classList.add(selCls);
-  }
 }
 
 // ── Calendário de Eventos ─────────────────────────────────────────
@@ -3425,6 +3068,14 @@ function _renderPrintChips(){
   // ── BPM ──
   const bpms = [...new Set(filtered.map(s=>String(s.bpm||'')).filter(Boolean))].sort((a,b)=>parseInt(a)-parseInt(b));
   _fillChips('printBpmChips','printBpmChipsEmpty', bpms.map(b=>({value:b, label:b+' bpm'})));
+
+  // ── Capo ──
+  const capos = [...new Set(filtered.map(s=>String(s.capo||'')).filter(Boolean))].sort((a,b)=>parseInt(a)-parseInt(b));
+  _fillChips('printCapoChips','printCapoChipsEmpty', capos.map(c=>({value:c, label:'Capo '+c})));
+
+  // Reset figura checkbox state
+  const figChk = document.getElementById('printShowFigura');
+  if(figChk && !capos.length) figChk.checked = false;
 }
 
 function _fillChips(wrapId, emptyId, items){
@@ -3465,10 +3116,14 @@ function doPrint(){
   const selKeys      = _getCheckedValues('printKeyChips');
   const selRhythms   = _getCheckedValues('printRhythmChips');
   const selBpms      = _getCheckedValues('printBpmChips');
+  const selCapos     = _getCheckedValues('printCapoChips');
+  const showFigura   = document.getElementById('printShowFigura')?.checked || false;
   const showTagCol   = selTagIds.length > 0;
   const showKeyCol   = selKeys.length > 0;
   const showRhythmCol= selRhythms.length > 0;
   const showBpmCol   = selBpms.length > 0;
+  const showCapoCol  = selCapos.length > 0;
+  const showFiguraCol= showFigura && (showCapoCol || showKeyCol);
 
   const tags = DB.tags || {};
   let songs = Object.values(DB.songs || {});
@@ -3502,10 +3157,12 @@ function doPrint(){
     blocksByPos[b.pos_after].push(b);
   });
 
-  const colCount = 3 + 1 + (showKeyCol?1:0) + (showRhythmCol?1:0) + (showBpmCol?1:0) + (showTagCol?1:0);
+  const colCount = 3 + 1 + (showKeyCol?1:0) + (showRhythmCol?1:0) + (showBpmCol?1:0) + (showCapoCol?1:0) + (showFiguraCol?1:0) + (showTagCol?1:0);
   const durTh = '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600;text-align:right">Dur.</th>';
   const metaTh =
     (showKeyCol    ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">Tom</th>' : '') +
+    (showCapoCol   ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">Capo</th>' : '') +
+    (showFiguraCol ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">Figura</th>' : '') +
     (showRhythmCol ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">Ritmo</th>' : '') +
     (showBpmCol    ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">BPM</th>' : '');
   const tagsTh = showTagCol ? '<th style="padding:6px 8px;border-bottom:2px solid #ddd;font-size:.68rem;font-weight:600">Tags</th>' : '';
@@ -3534,6 +3191,8 @@ function doPrint(){
     const durStr = durMs ? fmtDuration(durMs) : '';
     const metaTd =
       (showKeyCol    ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${selKeys.includes(s.key||'')    ? escH(s.key||'')    : ''}</td>` : '') +
+      (showCapoCol   ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${selCapos.includes(String(s.capo||'')) ? 'Capo '+escH(String(s.capo)) : ''}</td>` : '') +
+      (showFiguraCol ? (()=>{ const fig=capoFigura(s.key,s.capo); return `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem;font-weight:600">${fig?escH(fig):''}</td>`; })() : '') +
       (showRhythmCol ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${selRhythms.includes(s.rhythm||'') ? escH(s.rhythm||'') : ''}</td>` : '') +
       (showBpmCol    ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:.72rem">${selBpms.includes(String(s.bpm||''))  ? escH(String(s.bpm||''))  : ''}</td>` : '');
     const tagNames = showTagCol ? selTagIds.map(tid=>{ const t=tags[tid]; return (t&&(s.tags||[]).includes(tid))?t.name:''; }).filter(Boolean).join(', ') : '';
@@ -3602,13 +3261,60 @@ function doPrint(){
 }
 
 // ── Login ─────────────────────────────────────────────────────────
-function doLogin(){
+/*function doLogin(){
   const pwd = document.getElementById('loginPwd').value;
   if(!pwd){ showErr('loginErr','Digite a senha.'); return; }
   $.post(SCRIPT_URL, {_action:'_login', password:pwd}, function(r){
     if(r.ok){ window.location.reload(); }
     else showErr('loginErr', r.error || 'Senha incorreta.');
   }, 'json').fail(function(){ showErr('loginErr','Erro de rede.'); });
+}*/
+function doLogin() {
+    const pwdInput = document.getElementById('loginPwd');
+    const errDiv = document.getElementById('loginErr');
+    const pwd = pwdInput.value;
+
+    console.log("=== INICIANDO TENTATIVA DE LOGIN ===");
+    console.log("Senha digitada:", pwd);
+
+    if (!pwd) {
+        console.warn("Aviso: Senha está vazia.");
+        errDiv.innerText = "Por favor, digite a senha.";
+        return;
+    }
+
+    // ATENÇÃO: Altere 'index.php' abaixo para o arquivo correto que processa o seu código PHP
+    fetch('index.php', { 
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        // Enviando tanto no formato tradicional quanto JSON para garantir que seu PHP capture
+        body: 'password=' + encodeURIComponent(pwd)
+    })
+    .then(response => {
+        console.log("Resposta bruta do servidor recebida. Status HTTP:", response.status);
+        return response.text(); // Lemos como texto primeiro para o caso de o PHP mandar lixo ou erro HTML
+    })
+    .then(text => {
+        console.log("Conteúdo retornado pelo PHP:", text);
+        
+        try {
+            const data = JSON.parse(text);
+            console.log("JSON parseado com sucesso:", data);
+            
+            // Se o seu PHP devolve algo como {success: true} ou se simplesmente recarregar resolve:
+            console.log("Recarregando a página para testar a sessão...");
+            window.location.reload();
+        } catch(e) {
+            console.warn("O retorno não era um JSON válido, mas a requisição foi feita. Recarregando mesmo assim...");
+            window.location.reload();
+        }
+    })
+    .catch(error => {
+        console.error("Erro crítico na requisição AJAX:", error);
+        errDiv.innerText = "Erro na comunicação com o servidor.";
+    });
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
