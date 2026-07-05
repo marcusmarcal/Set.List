@@ -25,6 +25,15 @@ function envVal($key) {
     return $c[$key] ?? null;
 }
 
+// ── Spotify redirect URI ──────────────────────────────────────────
+function spotifyRedirectUri() {
+    $env = envVal('SPOTIFY_REDIRECT_URI');
+    if($env) return rtrim($env, '/') . '/?spotify_callback=1';
+    $scheme = (isset($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off') ? 'https' : 'http';
+    $host   = $_SERVER['HTTP_HOST'];
+    return $scheme . '://' . $host . '/?spotify_callback=1';
+}
+
 // ── Auth (REABILITADA) ──────────────────────────────────────────
 function adminPwd()  { 
   // Tenta pegar a senha do arquivo .env, se não existir, usa 'marcus' ou 'teste' como padrão
@@ -246,7 +255,7 @@ if(isset($_GET['logout'])){ header('Location: '.$_SERVER['PHP_SELF']); exit; }
 
 // ── AJAX Actions ────────────────────────────────────────────────
 if($_SERVER['REQUEST_METHOD']==='POST'){
-    $act = $_POST['_action'] ?? '';
+    $act = $_POST['_action'] ?? $_GET['_action'] ?? '';
 
     // ── Import dos JSONs originais → novo DB ──
     if($act==='import_from_originals'){
@@ -261,6 +270,172 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     }
 
     // ── Import de JSON enviado pelo cliente (upload) ──
+    if($act==='public_events'){
+        function _publicSongRow($s){
+            $uri = $s['spotify_uri'] ?? '';
+            $url = $s['spotify_url'] ?? '';
+            if(!$uri && $url && preg_match('#track/([A-Za-z0-9]+)#',$url,$m))
+                $uri = 'spotify:track:'.$m[1];
+            $trackId = '';
+            if(preg_match('#track[/:]([A-Za-z0-9]+)#', $uri.$url, $m)) $trackId = $m[1];
+            return [
+                'title'       => $s['title'] ?? '',
+                'artist'      => $s['artist'] ?? '',
+                'key'         => $s['key'] ?? '',
+                'spotify_url' => $url ?: ($trackId ? "https://open.spotify.com/track/$trackId" : ''),
+                'spotify_uri' => $uri,
+            ];
+        }
+        $db   = loadDb();
+        $tags = $db['tags'] ?? [];
+        $songs= $db['songs'] ?? [];
+        $out  = [];
+        foreach($tags as $tid => $t){
+            if(($t['type']??'')!=='event') continue;
+            if(!empty($t['archived'])) continue;
+            $order = !empty($t['song_order']) ? $t['song_order'] : null;
+            $list  = [];
+            if($order){
+                foreach($order as $sid){
+                    $s = $songs[$sid] ?? null;
+                    if(!$s || !in_array($tid, $s['tags']??[])) continue;
+                    $list[] = _publicSongRow($s);
+                }
+            } else {
+                foreach($songs as $s){
+                    if(!in_array($tid, $s['tags']??[])) continue;
+                    $list[] = _publicSongRow($s);
+                }
+            }
+            $out[] = [
+                'id'            => $tid,
+                'name'          => $t['name'] ?? '',
+                'date'          => $t['event_date'] ?? '',
+                'time'          => $t['event_time'] ?? '',
+                'location'      => $t['event_location'] ?? '',
+                'spotify_playlist'=> $t['spotify_id'] ? "https://open.spotify.com/playlist/{$t['spotify_id']}" : '',
+                'songs'         => $list,
+            ];
+        }
+        usort($out, fn($a,$b)=>strcmp($b['date'],$a['date']));
+        header('Access-Control-Allow-Origin: *');
+        jsonOut(['ok'=>true,'events'=>$out]);
+    }
+
+    if($act==='export_tag_to_spotify'){
+        needAuth();
+        if(!hasSpotCreds()) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas.']);
+        $db    = loadDb();
+        $tid   = trim($_POST['tag_id']??'');
+        $token = trim($_POST['user_token']??'');
+        $tag   = $db['tags'][$tid] ?? null;
+        if(!$tag) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
+        if(!$token) jsonOut(['ok'=>false,'error'=>'Token de utilizador em falta.']);
+        $order = $tag['song_order'] ?? array_keys($db['songs']);
+        $uris  = [];
+        foreach($order as $sid){
+            $s = $db['songs'][$sid] ?? null;
+            if(!$s || !(in_array($tid,$s['tags']??[]))) continue;
+            $uri = $s['spotify_uri'] ?? '';
+            if(!$uri && ($s['spotify_url']??'') && preg_match('#track/([A-Za-z0-9]+)#',$s['spotify_url'],$m))
+                $uri = 'spotify:track:'.$m[1];
+            if($uri) $uris[] = $uri;
+        }
+        if(!$uris) jsonOut(['ok'=>false,'error'=>'Nenhuma música desta tag tem link Spotify.']);
+        $ch = curl_init('https://api.spotify.com/v1/me');
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);
+        $me = json_decode(curl_exec($ch),true); curl_close($ch);
+        if(empty($me['id'])) jsonOut(['ok'=>false,'error'=>'Não foi possível obter o utilizador Spotify. Token expirado?']);
+        $userId = $me['id'];
+        $playlistId = $tag['spotify_id'] ?? '';
+        $desc = 'Exportado por SetList em '.date('d/m/Y');
+        $name = $tag['name'];
+        if($playlistId){
+            $chunks = array_chunk($uris, 100);
+            $first  = array_shift($chunks);
+            $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
+            curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                CURLOPT_CUSTOMREQUEST=>'PUT', CURLOPT_POSTFIELDS=>json_encode(['uris'=>$first]),
+                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+            curl_exec($ch); $code=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
+            if($code>=400) jsonOut(['ok'=>false,'error'=>"Erro ao actualizar playlist ($code)."]);
+            foreach($chunks as $chunk){
+                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
+                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
+                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+                curl_exec($ch); curl_close($ch);
+            }
+        } else {
+            $ch = curl_init("https://api.spotify.com/v1/users/{$userId}/playlists");
+            curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['name'=>$name,'description'=>$desc,'public'=>false]),
+                CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+            $pl = json_decode(curl_exec($ch),true); curl_close($ch);
+            if(empty($pl['id'])) jsonOut(['ok'=>false,'error'=>'Não foi possível criar a playlist.']);
+            $playlistId = $pl['id'];
+            foreach(array_chunk($uris, 100) as $chunk){
+                $ch = curl_init("https://api.spotify.com/v1/playlists/{$playlistId}/tracks");
+                curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token",'Content-Type: application/json'],
+                    CURLOPT_POST=>true, CURLOPT_POSTFIELDS=>json_encode(['uris'=>$chunk]),
+                    CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>15]);
+                curl_exec($ch); curl_close($ch);
+            }
+        }
+        $db['tags'][$tid]['spotify_id'] = $playlistId;
+        saveDb($db);
+        $playlistUrl = "https://open.spotify.com/playlist/{$playlistId}";
+        jsonOut(['ok'=>true,'playlist_id'=>$playlistId,'playlist_url'=>$playlistUrl,'tracks'=>count($uris)]);
+    }
+
+    if($act==='import_plain_text'){
+        needAuth();
+        $db      = loadDb();
+        $text    = trim($_POST['plain_text'] ?? '');
+        $tagId   = trim($_POST['tag_id'] ?? '');
+        $tagName = trim($_POST['tag_new'] ?? '');
+        if(!$text) jsonOut(['ok'=>false,'error'=>'Nenhum texto recebido.']);
+        // Resolve/cria tag
+        if(!$tagId && $tagName){
+            $tagId = 'tag_'.substr(md5($tagName.time()),0,8);
+            $db['tags'][$tagId] = ['id'=>$tagId,'name'=>$tagName,'type'=>'list','color'=>'','archived'=>false,'song_order'=>[]];
+        } elseif($tagId && !isset($db['tags'][$tagId])){
+            jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
+        }
+        $added = 0; $matched = 0;
+        foreach(explode("\n", $text) as $line){
+            $line = trim($line);
+            if(!$line) continue;
+            // Formato: Título - Artista  ou  Título (artista opcional)
+            if(strpos($line,' - ')!==false){
+                [$title,$artist] = array_map('trim', explode(' - ',$line,2));
+            } else { $title=$line; $artist=''; }
+            // Verificar duplicado pelo título normalizado
+            $norm = strtolower(preg_replace('/\s+/','',$title));
+            $found = null;
+            foreach($db['songs'] as $s){
+                if(strtolower(preg_replace('/\s+/','',$s['title']??''))===$norm){ $found=$s['id']; break; }
+            }
+            if($found){
+                $matched++;
+                if($tagId && !in_array($tagId,$db['songs'][$found]['tags']??[])){
+                    $db['songs'][$found]['tags'][] = $tagId;
+                }
+            } else {
+                $uuid = 'sid_'.substr(md5($title.$artist.mt_rand()),0,8);
+                $db['songs'][$uuid] = [
+                    'id'=>$uuid,'title'=>$title,'artist'=>$artist,
+                    'cifra_url'=>'','cifra_source'=>'','spotify_url'=>'','spotify_uri'=>'',
+                    'duration_ms'=>0,'tags'=>$tagId?[$tagId]:[],'key'=>'','bpm'=>'','rhythm'=>'','capo'=>'','notes'=>'',
+                ];
+                $added++;
+            }
+        }
+        if($tagId) $db['tags'][$tagId]['song_order'] = $db['tags'][$tagId]['song_order'] ?? [];
+        saveDb($db);
+        jsonOut(['ok'=>true,'added'=>$added,'matched'=>$matched,'tag_id'=>$tagId]);
+    }
+
     if($act==='import_from_json'){
         needAuth();
         $raw = $_POST['json_data'] ?? '';
@@ -866,7 +1041,8 @@ select.fi{cursor:pointer;-webkit-appearance:none;background-image:url("data:imag
 .fi-row{display:flex;gap:10px}
 .fi-row .fi{flex:1}
 
-/* tags picker */
+.filter-tag-picker{position:relative}
+.tag-picker-dropdown{position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);min-width:220px;max-height:320px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.35)}
 .tags-picker{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .tp-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-family:'DM Mono',monospace;font-size:.55rem;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;transition:all var(--tr)}
 .tp-chip:hover{border-color:var(--text2);color:var(--text2)}
@@ -1113,6 +1289,12 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     </button>
     <?php endif; ?>
     <?php if(isAuthed()): ?>
+    <button class="sb-btn" onclick="openModal('plainTextImportModal')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="13" y1="18" x2="3" y2="18"/></svg>
+      Importar Lista de Texto
+    </button>
+    <?php endif; ?>
+    <?php if(isAuthed()): ?>
     <button class="sb-btn" onclick="openModal('tagManagerModal')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
       Gerir Tags
@@ -1140,6 +1322,10 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     </div>
     <span class="saving" id="savingInd">Salvando…</span>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <button class="btn no-print" id="exportSpotifyBtn" onclick="openExportSpotify()" style="display:none;background:#1db954;border-color:#1db954;color:#000;font-weight:600">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.623 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+        Exportar para Spotify
+      </button>
       <?php if(isAuthed()): ?>
       <button class="btn btn-primary no-print" onclick="openModal('addSongModal')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1211,9 +1397,12 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="search-input" id="searchInput" placeholder="Buscar por título ou artista…" oninput="applyFilters()">
       </div>
-      <select class="filter-select" id="filterTag" onchange="applyFilters()">
-        <option value="">Todas as tags</option>
-      </select>
+      <div class="filter-tag-picker" id="filterTagPicker">
+        <button class="filter-select" id="filterTagBtn" onclick="toggleTagPicker(event)" style="cursor:pointer;text-align:left">Tags ▾</button>
+        <div class="tag-picker-dropdown" id="tagPickerDropdown" style="display:none">
+          <div id="tpdTagList" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px"></div>
+        </div>
+      </div>
       <select class="filter-select" id="filterRhythm" onchange="applyFilters()">
         <option value="">Todos os ritmos</option>
       </select>
@@ -1641,12 +1830,92 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   </div>
 </div>
 
+<div class="modal-overlay" id="spotifyExportModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title" style="display:flex;align-items:center;gap:10px">
+      <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+      Exportar para Spotify
+    </div>
+    <div class="modal-body">
+      <div id="spotifyExportErr"></div>
+      <div id="spotifyExportInfo" style="font-size:.8rem;color:var(--text2);margin-bottom:14px"></div>
+      <div id="seStep1">
+        <div style="font-size:.8rem;color:var(--text2);margin-bottom:12px">Para criar ou actualizar a playlist na tua conta Spotify, precisas autorizar o acesso uma vez. O token é usado apenas nesta sessão.</div>
+        <button class="btn" style="background:#1db954;border-color:#1db954;color:#000;width:100%;font-weight:600" onclick="startSpotifyAuth()">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+          Autorizar com Spotify
+        </button>
+        <div id="seAuthWaiting" style="display:none;text-align:center;padding:14px 0;font-size:.8rem;color:var(--text3)">
+          A aguardar autorização na janela que abriu…<br>
+          <button class="btn btn-ghost" style="margin-top:10px;font-size:.72rem" onclick="checkSpotifyAuthManual()">Já autorizei — continuar</button>
+        </div>
+      </div>
+      <div id="seStep2" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;margin-bottom:14px">
+          <svg viewBox="0 0 24 24" fill="#1db954" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
+          <span style="font-size:.78rem;color:#1db954" id="seAuthedAs">Conta autorizada</span>
+        </div>
+        <div id="seExistingPlaylist" style="display:none;font-size:.78rem;color:var(--text2);margin-bottom:10px"></div>
+        <div id="seTrackWarning" style="display:none;font-size:.75rem;color:var(--gold);padding:6px 10px;background:rgba(240,196,25,.08);border:1px solid rgba(240,196,25,.25);border-radius:6px;margin-bottom:10px"></div>
+        <div id="seExportResult" style="display:none"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('spotifyExportModal')">Fechar</button>
+      <button class="btn" id="seExportBtn" style="display:none;background:#1db954;border-color:#1db954;color:#000;font-weight:600" onclick="doExportToSpotify()">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+        <span id="seExportBtnLabel">Criar Playlist</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="plainTextImportModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-title">Importar Lista de Texto</div>
+    <div class="modal-body">
+      <div id="plainTextImportErr"></div>
+      <div class="fg">
+        <label class="fl">Formato aceite</label>
+        <div style="font-size:.72rem;color:var(--text3);padding:6px 10px;background:var(--bg3);border-radius:var(--r);font-family:'DM Mono',monospace;line-height:1.8">
+          Título da Música - Nome do Artista<br>
+          Outra Música - Outro Artista<br>
+          <span style="opacity:.5">← uma por linha, artista opcional</span>
+        </div>
+      </div>
+      <div class="fg">
+        <label class="fl">Lista de músicas</label>
+        <textarea class="fi" id="ptText" rows="10" placeholder="Proud Mary - Creedence Clearwater Revival&#10;Hotel California - Eagles&#10;Wonderwall - Oasis" style="font-family:'DM Mono',monospace;font-size:.76rem;resize:vertical"></textarea>
+      </div>
+      <div class="fg">
+        <label class="fl">Adicionar a uma tag/lista existente</label>
+        <select class="fi" id="ptTagId">
+          <option value="">— Nenhuma (só adicionar músicas) —</option>
+        </select>
+      </div>
+      <div class="fg">
+        <label class="fl">Ou criar nova tag com o nome</label>
+        <input class="fi" id="ptTagNew" placeholder="Ex: Setlist Agosto 2026">
+        <div style="font-size:.7rem;color:var(--text3);margin-top:4px">Se preenchido, cria uma nova tag e associa todas as músicas.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('plainTextImportModal')">Cancelar</button>
+      <button class="btn btn-primary" onclick="submitPlainTextImport()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Importar
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Bulk action bar -->
 <div class="bulk-bar" id="bulkBar">
   <span class="bulk-count" id="bulkCount">0 selecionadas</span>
   <div class="bulk-actions">
+    <button class="btn btn-ghost" onclick="selectAllVisible()" title="Selecionar todas as músicas visíveis">☑ Todas</button>
     <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
     <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
     <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
@@ -1798,7 +2067,7 @@ function renderSidebar(){
   function tagSection(label, tagArr, dotClass, isEvent){
     if(!tagArr.length) return '';
     let h = `<div style="font-family:'DM Mono',monospace;font-size:.48rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text3);padding:10px 8px 4px">${label}</div>`;
-    const arr = isEvent ? [...tagArr].sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||'')) : tagArr;
+    const arr = isEvent ? tagArr : tagArr; // already sorted by caller
     arr.forEach(t => {
       const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
       const isAct = activeTagFilter===t.id;
@@ -1832,12 +2101,8 @@ function renderFilterDropdowns(){
   const rhythmsInUse = [...new Set(Object.values(DB.songs||{}).map(s=>s.rhythm).filter(Boolean))];
   const keysInUse    = [...new Set(Object.values(DB.songs||{}).map(s=>s.key).filter(Boolean))];
 
-  // Tag filter (tags arquivadas não aparecem)
-  let tHtml = '<option value="">Todas as tags</option>';
-  Object.values(tags).filter(t=>!t.archived).forEach(t => {
-    tHtml += `<option value="${t.id}">${escH(t.name)}</option>`;
-  });
-  document.getElementById('filterTag').innerHTML = tHtml;
+  // Tag filter picker dropdown
+  renderFilterTagPicker();
 
   // Rhythm filter
   let rHtml = '<option value="">Todos os ritmos</option>';
@@ -1865,20 +2130,33 @@ function setTagFilter(tid){
 }
 
 function applyFilters(){
-  const q      = document.getElementById('searchInput').value.toLowerCase().trim();
-  const fTag   = document.getElementById('filterTag').value;
-  const fRhythm= document.getElementById('filterRhythm').value;
-  const fCapo  = document.getElementById('filterCapo').value;
-  const fKey   = document.getElementById('filterKey').value;
-  const sortBy = document.getElementById('sortBy').value;
+  const q       = document.getElementById('searchInput').value.toLowerCase().trim();
+  const fRhythm = document.getElementById('filterRhythm').value;
+  const fCapo   = document.getElementById('filterCapo').value;
+  const fKey    = document.getElementById('filterKey').value;
+  const sortBy  = document.getElementById('sortBy').value;
+  const noTag   = document.getElementById('tpdNoTagChip')?.classList.contains('sel-custom');
+  const includeTags = [...document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip).sel-list, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-custom, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-musician')].map(c=>c.dataset.tid);
+  const excludeTags = [...document.querySelectorAll('#tpdTagList .tp-chip.sel-exclude')].map(c=>c.dataset.tid);
+
+  // Atualizar label do botão
+  const total = includeTags.length + excludeTags.length + (noTag?1:0);
+  const btn = document.getElementById('filterTagBtn');
+  if(btn) btn.textContent = total ? `Tags (${total}) ▾` : 'Tags ▾';
 
   let songs = Object.values(DB.songs || {}).filter(isSongVisible);
 
-  // Tag filter (sidebar)
+  // Tag filter (sidebar) — obrigatória
   if(activeTagFilter) songs = songs.filter(s=>(s.tags||[]).includes(activeTagFilter));
 
-  // Additional filters
-  if(fTag)    songs = songs.filter(s=>(s.tags||[]).includes(fTag));
+  // Picker: "Sem tag" ou include/exclude
+  if(noTag && !activeTagFilter){
+    songs = songs.filter(s=>!(s.tags||[]).length);
+  } else {
+    includeTags.forEach(tid => { songs = songs.filter(s=>(s.tags||[]).includes(tid)); });
+    excludeTags.forEach(tid => { songs = songs.filter(s=>!(s.tags||[]).includes(tid)); });
+  }
+
   if(fRhythm) songs = songs.filter(s=>s.rhythm===fRhythm);
   if(fCapo)   songs = songs.filter(s=>String(s.capo||'')===fCapo);
   if(fKey)    songs = songs.filter(s=>s.key===fKey);
@@ -1888,7 +2166,7 @@ function applyFilters(){
   // O sortBy do dropdown é IGNORADO quando há ordem personalizada — nunca destrói a ordem guardada
   const activeTag = activeTagFilter ? DB.tags[activeTagFilter] : null;
   const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
-  const hasExtraFilters = !!(fTag || fRhythm || fCapo || fKey || q);
+  const hasExtraFilters = !!(includeTags.length || excludeTags.length || noTag || fRhythm || fCapo || fKey || q);
   const isOrderMode = hasCustomOrder && !hasExtraFilters;
 
   if(isOrderMode){
@@ -1931,6 +2209,7 @@ function applyFilters(){
   renderTable(songs, canOrder);
   document.getElementById('statVisible').textContent = songs.length;
   document.getElementById('currentViewSub').textContent = songs.length + ' músicas' + (activeTagFilter ? ' nesta lista' : ' no catálogo');
+  updateExportSpotifyBtn();
 
   // ── Duração total ──
   const totalMs = songs.reduce((acc, s) => acc + (parseInt(s.duration_ms)||0), 0);
@@ -2322,6 +2601,14 @@ function toggleSongSelection(sid){
   updateBulkBar();
 }
 
+function selectAllVisible(){
+  document.querySelectorAll('tr.song-row').forEach(row => {
+    const sid = row.dataset.id;
+    if(sid){ selectedSongIds.add(sid); row.classList.add('selected'); }
+  });
+  updateBulkBar();
+}
+
 function clearSelection(){
   selectedSongIds.clear();
   document.querySelectorAll('tr.song-row.selected').forEach(r => r.classList.remove('selected'));
@@ -2473,7 +2760,16 @@ function openModal(id){
     document.getElementById('asCapoFigura').style.color = 'var(--text3)';
   }
   // Reset spotify import modal
-  if(id==='spotifyImportModal'){
+  if(id==='plainTextImportModal'){
+    const tags = DB.tags || {};
+    let opts = '<option value="">— Nenhuma (só adicionar músicas) —</option>';
+    Object.values(tags).filter(t=>!t.archived).forEach(t=>{
+      opts += `<option value="${t.id}">${escH(t.name)}</option>`;
+    });
+    document.getElementById('ptTagId').innerHTML = opts;
+    document.getElementById('ptTagNew').value = '';
+    document.getElementById('ptText').value = '';
+    document.getElementById('plainTextImportErr').innerHTML = '';
     document.getElementById('siInput').value = '';
     document.getElementById('siTagName').value = '';
     document.getElementById('siTagType').value = 'list';
@@ -2774,17 +3070,24 @@ function submitAddRhythm(){
 
 // ── Copiar Lista para Clipboard ───────────────────────────────────
 function copyListToClipboard(){
-  const tags  = DB.tags || {};
+  const tags    = DB.tags || {};
   const q       = document.getElementById('searchInput').value.toLowerCase().trim();
-  const fTag    = document.getElementById('filterTag').value;
   const fRhythm = document.getElementById('filterRhythm').value;
   const fCapo   = document.getElementById('filterCapo').value;
   const fKey    = document.getElementById('filterKey').value;
   const sortBy  = document.getElementById('sortBy').value;
+  const noTag   = document.getElementById('tpdNoTagChip')?.classList.contains('sel-custom');
+  const includeTags = [...document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip).sel-list, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-custom, #tpdTagList .tp-chip:not(#tpdNoTagChip).sel-musician')].map(c=>c.dataset.tid);
+  const excludeTags = [...document.querySelectorAll('#tpdTagList .tp-chip.sel-exclude')].map(c=>c.dataset.tid);
 
   let visible = Object.values(DB.songs || {}).filter(isSongVisible);
   if(activeTagFilter) visible = visible.filter(s=>(s.tags||[]).includes(activeTagFilter));
-  if(fTag)    visible = visible.filter(s=>(s.tags||[]).includes(fTag));
+  if(noTag && !activeTagFilter){
+    visible = visible.filter(s=>!(s.tags||[]).length);
+  } else {
+    includeTags.forEach(tid => { visible = visible.filter(s=>(s.tags||[]).includes(tid)); });
+    excludeTags.forEach(tid => { visible = visible.filter(s=>!(s.tags||[]).includes(tid)); });
+  }
   if(fRhythm) visible = visible.filter(s=>s.rhythm===fRhythm);
   if(fCapo)   visible = visible.filter(s=>String(s.capo||'')===fCapo);
   if(fKey)    visible = visible.filter(s=>s.key===fKey);
@@ -2793,7 +3096,7 @@ function copyListToClipboard(){
   // Respeita ordem personalizada (mesma lógica do applyFilters)
   const activeTag = activeTagFilter ? tags[activeTagFilter] : null;
   const hasCustomOrder = activeTag && (activeTag.song_order||[]).length > 0;
-  const hasExtraFilters = !!(fTag || fRhythm || fCapo || fKey || q);
+  const hasExtraFilters = !!(includeTags.length || excludeTags.length || noTag || fRhythm || fCapo || fKey || q);
   if(hasCustomOrder && !hasExtraFilters){
     const orderMap = {};
     (activeTag.song_order||[]).forEach((id, i) => { orderMap[id] = i; });
@@ -2943,7 +3246,204 @@ function doImportOriginals(){
   input.click();
 }
 
-// ── Calendário de Eventos ─────────────────────────────────────────
+// ── Exportar para Spotify ─────────────────────────────────────────
+let _spotifyUserToken = null;
+let _spotifyAuthWindow = null;
+let _spotifyAuthInterval = null;
+const SPOTIFY_SCOPES = 'playlist-modify-private playlist-modify-public';
+
+function openExportSpotify(){
+  if(!activeTagFilter){ showToast('Seleciona uma lista ou evento primeiro.', true); return; }
+  const tag = (DB.tags||{})[activeTagFilter];
+  if(!tag){ showToast('Tag não encontrada.', true); return; }
+  const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
+  const withSpotify = songs.filter(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
+  document.getElementById('spotifyExportInfo').innerHTML =
+    `<strong>${escH(tag.name)}</strong> — ${songs.length} músicas, ${withSpotify.length} com link Spotify`;
+  const existing = tag.spotify_id||'';
+  document.getElementById('seExistingPlaylist').style.display = existing ? '' : 'none';
+  if(existing){
+    document.getElementById('seExistingPlaylist').innerHTML =
+      `Playlist já vinculada: <a href="https://open.spotify.com/playlist/${escH(existing)}" target="_blank" style="color:#1db954">abrir no Spotify</a>. Será <strong>substituída</strong> pelas músicas actuais.`;
+    document.getElementById('seExportBtnLabel').textContent = 'Actualizar Playlist';
+  } else {
+    document.getElementById('seExportBtnLabel').textContent = 'Criar Playlist';
+  }
+  if(withSpotify.length < songs.length){
+    const missing = songs.length - withSpotify.length;
+    document.getElementById('seTrackWarning').style.display = '';
+    document.getElementById('seTrackWarning').textContent =
+      `⚠ ${missing} música${missing>1?'s':''} sem link Spotify ${missing>1?'serão ignoradas':'será ignorada'}.`;
+  } else {
+    document.getElementById('seTrackWarning').style.display = 'none';
+  }
+  document.getElementById('spotifyExportErr').innerHTML = '';
+  document.getElementById('seExportResult').style.display = 'none';
+  if(_spotifyUserToken){
+    showSeStep2();
+  } else {
+    document.getElementById('seStep1').style.display = '';
+    document.getElementById('seAuthWaiting').style.display = 'none';
+    document.getElementById('seStep2').style.display = 'none';
+    document.getElementById('seExportBtn').style.display = 'none';
+  }
+  openModal('spotifyExportModal');
+}
+
+async function startSpotifyAuth(){
+  const clientId = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: getenv('CLIENT_ID') ?: '') ?>';
+  if(!clientId){ showErr('spotifyExportErr','CLIENT_ID não configurado no .env.'); return; }
+  const redirectUri = '<?= addslashes(spotifyRedirectUri()) ?>';
+  const verifier = generateCodeVerifier();
+  const challenge = await generateCodeChallenge(verifier);
+  sessionStorage.setItem('spotify_pkce_verifier', verifier);
+  const state = Math.random().toString(36).slice(2);
+  sessionStorage.setItem('spotify_oauth_state', state);
+  const params = new URLSearchParams({
+    response_type:'code', client_id:clientId,
+    scope:SPOTIFY_SCOPES, redirect_uri:redirectUri,
+    state, code_challenge_method:'S256', code_challenge:challenge
+  });
+  _spotifyAuthWindow = window.open('https://accounts.spotify.com/authorize?'+params, 'spotify_auth', 'width=480,height=640');
+  document.getElementById('seAuthWaiting').style.display = '';
+  _spotifyAuthInterval = setInterval(checkSpotifyAuthAuto, 1000);
+}
+
+function generateCodeVerifier(){
+  const arr = new Uint8Array(64);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function generateCodeChallenge(verifier){
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function spotifyAuthError(msg){
+  showErr('spotifyExportErr','Erro de autorização Spotify: '+msg);
+  document.getElementById('seAuthWaiting').style.display = 'none';
+  clearInterval(_spotifyAuthInterval);
+}
+function checkSpotifyAuthAuto(){
+  try {
+    if(!_spotifyAuthWindow || _spotifyAuthWindow.closed){ clearInterval(_spotifyAuthInterval); checkSpotifyAuthManual(); return; }
+    const hash = _spotifyAuthWindow.location.hash;
+    if(hash && hash.includes('access_token')){ extractSpotifyToken(_spotifyAuthWindow.location.href); _spotifyAuthWindow.close(); clearInterval(_spotifyAuthInterval); }
+  } catch(e){}
+}
+function checkSpotifyAuthManual(){
+  clearInterval(_spotifyAuthInterval);
+  const token = sessionStorage.getItem('spotify_access_token');
+  if(token){ _spotifyUserToken = token; showSeStep2(); }
+  else showErr('spotifyExportErr','Autorização não detectada. Tenta novamente.');
+}
+function extractSpotifyToken(token){
+  if(token){ _spotifyUserToken = token; sessionStorage.setItem('spotify_access_token', token); showSeStep2(); }
+}
+function showSeStep2(){
+  document.getElementById('seStep1').style.display = 'none';
+  document.getElementById('seStep2').style.display = '';
+  document.getElementById('seExportBtn').style.display = '';
+  fetch('https://api.spotify.com/v1/me',{headers:{Authorization:'Bearer '+_spotifyUserToken}})
+    .then(r=>r.json()).then(me=>{
+      if(me.id) document.getElementById('seAuthedAs').textContent = `Conta: ${me.display_name||me.id}`;
+      else { _spotifyUserToken=null; showErr('spotifyExportErr','Token inválido. Autoriza novamente.'); document.getElementById('seStep1').style.display=''; document.getElementById('seStep2').style.display='none'; document.getElementById('seExportBtn').style.display='none'; }
+    }).catch(()=>{});
+}
+function doExportToSpotify(){
+  if(!activeTagFilter||!_spotifyUserToken) return;
+  const btn = document.getElementById('seExportBtn');
+  const label = document.getElementById('seExportBtnLabel');
+  btn.disabled = true; label.textContent = 'A exportar…';
+  showSaving();
+  post({ _action:'export_tag_to_spotify', tag_id:activeTagFilter, user_token:_spotifyUserToken }, function(r){
+    hideSaving(); btn.disabled = false;
+    if(r.ok){
+      label.textContent = 'Actualizar Playlist';
+      const el = document.getElementById('seExportResult');
+      el.style.display = '';
+      el.innerHTML = `<div style="padding:10px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;font-size:.8rem">
+        ✅ ${r.tracks} músicas exportadas!<br>
+        <a href="${escH(r.playlist_url)}" target="_blank" style="color:#1db954;font-weight:600">Abrir playlist no Spotify →</a>
+      </div>`;
+      document.getElementById('seExistingPlaylist').style.display = '';
+      document.getElementById('seExistingPlaylist').innerHTML =
+        `Playlist vinculada: <a href="${escH(r.playlist_url)}" target="_blank" style="color:#1db954">abrir no Spotify</a>`;
+      loadDbFromServer(); showToast(`Playlist exportada! ${r.tracks} músicas.`);
+    } else {
+      label.textContent = 'Tentar novamente';
+      showErr('spotifyExportErr', r.error||'Erro ao exportar.');
+    }
+  });
+}
+function updateExportSpotifyBtn(){
+  const btn = document.getElementById('exportSpotifyBtn');
+  if(!btn) return;
+  if(!activeTagFilter){ btn.style.display='none'; return; }
+  const tag = (DB.tags||{})[activeTagFilter];
+  if(!tag){ btn.style.display='none'; return; }
+  const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
+  const hasSpotify = songs.some(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
+  btn.style.display = hasSpotify ? '' : 'none';
+}
+
+function submitPlainTextImport(){
+  const text   = document.getElementById('ptText').value.trim();
+  const tagId  = document.getElementById('ptTagId').value;
+  const tagNew = document.getElementById('ptTagNew').value.trim();
+  if(!text){ showErr('plainTextImportErr','Cola o texto com as músicas.'); return; }
+  if(tagId && tagNew){ showErr('plainTextImportErr','Escolhe uma tag existente OU cria uma nova, não as duas.'); return; }
+  showSaving();
+  post({ _action:'import_plain_text', plain_text:text, tag_id:tagId, tag_new:tagNew }, function(r){
+    hideSaving();
+    if(r.ok){
+      closeModal('plainTextImportModal');
+      loadDbFromServer();
+      showToast(`✓ ${r.added} música${r.added!==1?'s':''} adicionada${r.added!==1?'s':''}, ${r.matched} já existia${r.matched!==1?'m':''}.`);
+    } else {
+      showErr('plainTextImportErr', r.error||'Erro ao importar.');
+    }
+  });
+}
+
+// ── Filter Tag Picker ─────────────────────────────────────────────
+function toggleTagPicker(e){
+  e.stopPropagation();
+  const dd = document.getElementById('tagPickerDropdown');
+  dd.style.display = dd.style.display !== 'none' ? 'none' : '';
+}
+function toggleNoTagFilter(el){
+  el.classList.toggle('sel-custom');
+  applyFilters();
+}
+document.addEventListener('click', function(e){
+  const picker = document.getElementById('tagPickerDropdown');
+  if(picker && picker.style.display !== 'none'){
+    if(!document.getElementById('filterTagPicker').contains(e.target)){
+      picker.style.display = 'none';
+    }
+  }
+});
+function toggleFilterChip(el){
+  const selCls = el.dataset.type==='list' ? 'sel-list' : el.dataset.type==='musician' ? 'sel-musician' : 'sel-custom';
+  if(el.classList.contains('sel-exclude')){
+    el.classList.remove('sel-exclude');
+  } else if(el.classList.contains(selCls)){
+    el.classList.remove(selCls);
+    el.classList.add('sel-exclude');
+  } else {
+    el.classList.add(selCls);
+  }
+}
+function renderFilterTagPicker(){
+  renderTagsPicker('tpdTagList', []);
+  const noTagChip = `<span class="tp-chip" id="tpdNoTagChip" onclick="toggleNoTagFilter(this)" style="font-style:italic">Sem tag</span>`;
+  document.getElementById('tpdTagList').insertAdjacentHTML('afterbegin', noTagChip);
+  document.querySelectorAll('#tpdTagList .tp-chip:not(#tpdNoTagChip)').forEach(chip => {
+    chip.dataset.type = chip.dataset.type || 'custom';
+    chip.onclick = function(){ toggleFilterChip(this); applyFilters(); };
+  });
+}
 function openCalendarModal(){
   const tags = DB.tags || {};
   const today = new Date().toISOString().slice(0,10);
@@ -3261,60 +3761,17 @@ function doPrint(){
 }
 
 // ── Login ─────────────────────────────────────────────────────────
-/*function doLogin(){
+function doLogin(){
   const pwd = document.getElementById('loginPwd').value;
   if(!pwd){ showErr('loginErr','Digite a senha.'); return; }
-  $.post(SCRIPT_URL, {_action:'_login', password:pwd}, function(r){
-    if(r.ok){ window.location.reload(); }
-    else showErr('loginErr', r.error || 'Senha incorreta.');
-  }, 'json').fail(function(){ showErr('loginErr','Erro de rede.'); });
-}*/
-function doLogin() {
-    const pwdInput = document.getElementById('loginPwd');
-    const errDiv = document.getElementById('loginErr');
-    const pwd = pwdInput.value;
-
-    console.log("=== INICIANDO TENTATIVA DE LOGIN ===");
-    console.log("Senha digitada:", pwd);
-
-    if (!pwd) {
-        console.warn("Aviso: Senha está vazia.");
-        errDiv.innerText = "Por favor, digite a senha.";
-        return;
-    }
-
-    // ATENÇÃO: Altere 'index.php' abaixo para o arquivo correto que processa o seu código PHP
-    fetch('index.php', { 
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        // Enviando tanto no formato tradicional quanto JSON para garantir que seu PHP capture
-        body: 'password=' + encodeURIComponent(pwd)
-    })
-    .then(response => {
-        console.log("Resposta bruta do servidor recebida. Status HTTP:", response.status);
-        return response.text(); // Lemos como texto primeiro para o caso de o PHP mandar lixo ou erro HTML
-    })
-    .then(text => {
-        console.log("Conteúdo retornado pelo PHP:", text);
-        
-        try {
-            const data = JSON.parse(text);
-            console.log("JSON parseado com sucesso:", data);
-            
-            // Se o seu PHP devolve algo como {success: true} ou se simplesmente recarregar resolve:
-            console.log("Recarregando a página para testar a sessão...");
-            window.location.reload();
-        } catch(e) {
-            console.warn("O retorno não era um JSON válido, mas a requisição foi feita. Recarregando mesmo assim...");
-            window.location.reload();
-        }
-    })
-    .catch(error => {
-        console.error("Erro crítico na requisição AJAX:", error);
-        errDiv.innerText = "Erro na comunicação com o servidor.";
-    });
+  fetch(window.location.pathname, {
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'password='+encodeURIComponent(pwd)
+  }).then(r=>r.json()).then(d=>{
+    if(d.success) window.location.reload();
+    else showErr('loginErr', d.error||'Senha incorreta.');
+  }).catch(()=>{ showErr('loginErr','Erro de rede.'); });
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
