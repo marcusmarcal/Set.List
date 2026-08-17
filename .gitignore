@@ -1,4 +1,4 @@
-.env
+.env*
 .vscode
 v1/songs*.json
 *.json
