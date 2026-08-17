@@ -143,4 +143,4 @@ Esse arquivo pode ser feito backup manualmente (é só copiar) e reimportado dep
 
 ## 📄 Licença
 
-Defina aqui a licença do projeto (ex: MIT) antes de publicar publicamente.
+MIT
