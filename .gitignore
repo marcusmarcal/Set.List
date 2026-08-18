@@ -1,4 +1,8 @@
-.env
+.env*
 .vscode
 v1/songs*.json
+<<<<<<< HEAD
 *.json
+=======
+*.json
+>>>>>>> 3a1d447a6d25e0d1d76e49201a3060eac06f6557
