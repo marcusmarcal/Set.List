@@ -5,7 +5,23 @@
 //  NÃO modifica os JSONs originais — importa na memória apenas.
 // ════════════════════════════════════════════════════════════════
 
-if (session_status() === PHP_SESSION_NONE) session_start();
+// ── Hardening de sessão (antes de session_start) ─────────────────
+if (session_status() === PHP_SESSION_NONE) {
+    $https = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['SERVER_PORT'] ?? '') == 443;
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => $https,   // cookie só via HTTPS quando o site estiver em HTTPS
+        'httponly' => true,     // impede acesso ao cookie via JavaScript (protege contra XSS)
+        'samesite' => 'Lax',
+    ]);
+    session_start();
+}
+
+// ── Cabeçalhos de segurança básicos ───────────────────────────────
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
 // ── .env loader ─────────────────────────────────────────────────
 function envVal($key) {
@@ -35,9 +51,8 @@ function spotifyRedirectUri() {
 }
 
 // ── Auth (REABILITADA) ──────────────────────────────────────────
-function adminPwd()  { 
-  // Tenta pegar a senha do arquivo .env, se não existir, usa 'marcus' ou 'teste' como padrão
-  return envVal('ADMIN_PWD') ?? 'marcus'; 
+function adminPwd()  {
+  return envVal('ADMIN_PWD');
 }
 
 function isLocked()  { 
@@ -60,12 +75,43 @@ function needAuth() {
   }
 }
 
+// ── Limitador de tentativas de login (protege contra força bruta) ──
+function _loginAttemptsFile() { return __DIR__ . '/.login_attempts.json'; }
+function _loginRateCheck() {
+    $file = _loginAttemptsFile();
+    $ip   = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $now  = time();
+    $data = file_exists($file) ? (json_decode(file_get_contents($file), true) ?: []) : [];
+    foreach ($data as $k => $v) if ($now - ($v['t'] ?? 0) > 900) unset($data[$k]); // limpa entradas com +15min
+    $entry = $data[$ip] ?? ['n' => 0, 't' => $now];
+    return [$data, $entry, $ip, $now];
+}
+function _loginRateFail($data, $entry, $ip, $now) {
+    $entry['n'] = ($entry['n'] ?? 0) + 1;
+    $entry['t'] = $now;
+    $data[$ip] = $entry;
+    file_put_contents(_loginAttemptsFile(), json_encode($data));
+}
+function _loginRateClear($data, $ip) {
+    unset($data[$ip]);
+    file_put_contents(_loginAttemptsFile(), json_encode($data));
+}
+
 // ── INTERCEPTOR DE LOGIN ────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
+  [$rlData, $rlEntry, $rlIp, $rlNow] = _loginRateCheck();
+  if (($rlEntry['n'] ?? 0) >= 8) {
+      jsonOut(['success' => false, 'error' => 'Muitas tentativas incorretas. Aguarda 15 minutos e tenta novamente.']);
+  }
+  if (!adminPwd()) {
+      jsonOut(['success' => false, 'error' => 'ADMIN_PWD não configurada no .env do servidor. Defina uma senha forte antes de usar o site.']);
+  }
   if ($_POST['password'] === adminPwd()) {
       $_SESSION['authenticated'] = true;
+      _loginRateClear($rlData, $rlIp);
       jsonOut(['success' => true]);
   } else {
+      _loginRateFail($rlData, $rlEntry, $rlIp, $rlNow);
       jsonOut(['success' => false, 'error' => 'Senha incorreta.']);
   }
 }
@@ -88,6 +134,62 @@ if (isset($_GET['logout'])) {
   // Redireciona limpando o "?logout=1" da URL
   header('Location: ' . $_SERVER['PHP_SELF']); 
   exit; 
+}
+// ────────────────────────────────────────────────────────────────
+
+// ── CALLBACK OAUTH DO SPOTIFY (faltava) ──────────────────────────
+// O redirect_uri aponta para /?spotify_callback=1, mas até aqui nada
+// tratava esse parâmetro — o Spotify voltava e a página só carregava
+// o app normal, parecendo que "abriu o próprio site" em vez do Spotify.
+// Esta rota troca o "code" (PKCE) pelo access_token e devolve à janela pai.
+if (isset($_GET['spotify_callback'])) {
+  $clientId = envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: getenv('CLIENT_ID') ?: '';
+  ?><!DOCTYPE html><html><head><meta charset="UTF-8"><title>Spotify — autorizar</title></head>
+  <body style="font-family:sans-serif;padding:40px;text-align:center;color:#555">
+  <p id="scMsg">A finalizar autorização com o Spotify…</p>
+  <script>
+  (async function(){
+    const params = new URLSearchParams(window.location.search);
+    const code  = params.get('code');
+    const state = params.get('state');
+    const err   = params.get('error');
+    const msg   = document.getElementById('scMsg');
+    if (err) { msg.textContent = 'Erro: ' + err; return; }
+    const savedState = localStorage.getItem('spotify_oauth_state');
+    const verifier    = localStorage.getItem('spotify_pkce_verifier');
+    if (!code || !verifier || state !== savedState) {
+      msg.textContent = 'Autorização inválida ou expirada. Fecha esta janela e tenta novamente.';
+      return;
+    }
+    try {
+      const resp = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code,
+          redirect_uri: <?= json_encode(spotifyRedirectUri()) ?>,
+          client_id: <?= json_encode($clientId) ?>,
+          code_verifier: verifier
+        })
+      });
+      const data = await resp.json();
+      if (data.access_token) {
+        localStorage.setItem('spotify_access_token', data.access_token);
+        if (data.refresh_token) localStorage.setItem('spotify_refresh_token', data.refresh_token);
+        if (data.expires_in) localStorage.setItem('spotify_token_expires', String(Date.now() + data.expires_in*1000));
+        msg.textContent = 'Autorizado! A fechar…';
+      } else {
+        msg.textContent = 'Erro ao obter token: ' + (data.error_description || data.error || 'desconhecido');
+      }
+    } catch(e) {
+      msg.textContent = 'Erro de rede ao trocar o código.';
+    }
+    setTimeout(function(){ window.close(); }, 700);
+  })();
+  </script>
+  </body></html><?php
+  exit;
 }
 // ────────────────────────────────────────────────────────────────
 
@@ -242,6 +344,22 @@ function spotToken() {
     $r = json_decode(curl_exec($ch),true); curl_close($ch);
     return $r['access_token'] ?? null;
 }
+function spotifySearchTrack($token, $title, $artist) {
+    $title = trim($title); $artist = trim($artist);
+    if(!$title) return null;
+    $attempts = $artist
+        ? ["track:\"$title\" artist:\"$artist\"", "$title $artist"]
+        : [$title];
+    foreach($attempts as $q){
+        $ch = curl_init('https://api.spotify.com/v1/search?type=track&limit=1&q='.urlencode($q));
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],
+            CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>10]);
+        $res = json_decode(curl_exec($ch), true); curl_close($ch);
+        $track = $res['tracks']['items'][0] ?? null;
+        if($track) return ['uri'=>$track['uri'] ?? '', 'url'=>$track['external_urls']['spotify'] ?? ''];
+    }
+    return null;
+}
 function fmtMs($ms){
     if(!$ms) return '';
     $totalSec=(int)round($ms/1000);
@@ -322,6 +440,58 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'events'=>$out]);
     }
 
+    // ── Busca múltiplas opções no Spotify para relacionar manualmente ──
+    if($act==='spotify_search_multi'){
+        needAuth();
+        $token = trim($_POST['user_token']??'');
+        $q     = trim($_POST['q']??'');
+        if(!$token) jsonOut(['ok'=>false,'error'=>'Token em falta.']);
+        if(!$q) jsonOut(['ok'=>true,'results'=>[]]);
+        if(!function_exists('curl_init')) jsonOut(['ok'=>false,'error'=>'Extensão cURL não está disponível neste servidor.']);
+        $ch = curl_init('https://api.spotify.com/v1/search?type=track&limit=8&q='.urlencode($q));
+        curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],
+            CURLOPT_RETURNTRANSFER=>true, CURLOPT_SSL_VERIFYPEER=>false, CURLOPT_TIMEOUT=>10]);
+        $raw = curl_exec($ch);
+        $curlErr = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        if($raw === false){
+            jsonOut(['ok'=>false,'error'=>'Falha de conexão com o Spotify: '.($curlErr ?: 'erro desconhecido').' (o servidor pode estar a bloquear ligações externas)']);
+        }
+        $res = json_decode($raw, true);
+        if(isset($res['error'])) jsonOut(['ok'=>false,'error'=>$res['error']['message'] ?? 'Erro na busca Spotify.']);
+        if(!is_array($res) || !isset($res['tracks'])){
+            jsonOut(['ok'=>false,'error'=>"Resposta inesperada do Spotify (HTTP $httpCode). Resposta: ".substr($raw,0,200)]);
+        }
+        $out = [];
+        foreach(($res['tracks']['items'] ?? []) as $t){
+            $out[] = [
+                'uri'         => $t['uri'] ?? '',
+                'url'         => $t['external_urls']['spotify'] ?? '',
+                'name'        => $t['name'] ?? '',
+                'artists'     => implode(', ', array_map(fn($a)=>$a['name'], $t['artists'] ?? [])),
+                'album'       => $t['album']['name'] ?? '',
+                'image'       => $t['album']['images'][2]['url'] ?? ($t['album']['images'][1]['url'] ?? ($t['album']['images'][0]['url'] ?? '')),
+                'duration_ms' => $t['duration_ms'] ?? 0,
+            ];
+        }
+        jsonOut(['ok'=>true,'results'=>$out]);
+    }
+
+    // ── Grava manualmente o link Spotify escolhido para uma música ──
+    if($act==='set_song_spotify'){
+        needAuth();
+        $db  = loadDb();
+        $sid = trim($_POST['song_id']??'');
+        if(!isset($db['songs'][$sid])) jsonOut(['ok'=>false,'error'=>'Música não encontrada.']);
+        $db['songs'][$sid]['spotify_uri'] = trim($_POST['spotify_uri']??'');
+        $db['songs'][$sid]['spotify_url'] = trim($_POST['spotify_url']??'');
+        $dur = (int)($_POST['duration_ms']??0);
+        if($dur>0) $db['songs'][$sid]['duration_ms'] = $dur;
+        saveDb($db);
+        jsonOut(['ok'=>true]);
+    }
+
     if($act==='export_tag_to_spotify'){
         needAuth();
         if(!hasSpotCreds()) jsonOut(['ok'=>false,'error'=>'Credenciais Spotify não configuradas.']);
@@ -331,17 +501,29 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $tag   = $db['tags'][$tid] ?? null;
         if(!$tag) jsonOut(['ok'=>false,'error'=>'Tag não encontrada.']);
         if(!$token) jsonOut(['ok'=>false,'error'=>'Token de utilizador em falta.']);
-        $order = $tag['song_order'] ?? array_keys($db['songs']);
-        $uris  = [];
+        $order = !empty($tag['song_order']) ? $tag['song_order'] : array_keys($db['songs']);
+        $uris  = []; $notFound = []; $matched = 0;
         foreach($order as $sid){
             $s = $db['songs'][$sid] ?? null;
             if(!$s || !(in_array($tid,$s['tags']??[]))) continue;
             $uri = $s['spotify_uri'] ?? '';
             if(!$uri && ($s['spotify_url']??'') && preg_match('#track/([A-Za-z0-9]+)#',$s['spotify_url'],$m))
                 $uri = 'spotify:track:'.$m[1];
+            // Música sem link Spotify: procura automaticamente pelo título + artista
+            if(!$uri){
+                $found = spotifySearchTrack($token, $s['title'] ?? '', $s['artist'] ?? '');
+                if($found && $found['uri']){
+                    $uri = $found['uri'];
+                    $db['songs'][$sid]['spotify_uri'] = $uri;
+                    if($found['url']) $db['songs'][$sid]['spotify_url'] = $found['url'];
+                    $matched++;
+                } else {
+                    $notFound[] = trim(($s['title']??'').' - '.($s['artist']??''), ' -');
+                }
+            }
             if($uri) $uris[] = $uri;
         }
-        if(!$uris) jsonOut(['ok'=>false,'error'=>'Nenhuma música desta tag tem link Spotify.']);
+        if(!$uris) jsonOut(['ok'=>false,'error'=>'Nenhuma música desta tag foi encontrada no Spotify.'.($notFound?(' Não encontradas: '.implode(', ',array_slice($notFound,0,5))):'')]);
         $ch = curl_init('https://api.spotify.com/v1/me');
         curl_setopt_array($ch,[CURLOPT_HTTPHEADER=>["Authorization: Bearer $token"],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);
         $me = json_decode(curl_exec($ch),true); curl_close($ch);
@@ -385,7 +567,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $db['tags'][$tid]['spotify_id'] = $playlistId;
         saveDb($db);
         $playlistUrl = "https://open.spotify.com/playlist/{$playlistId}";
-        jsonOut(['ok'=>true,'playlist_id'=>$playlistId,'playlist_url'=>$playlistUrl,'tracks'=>count($uris)]);
+        jsonOut(['ok'=>true,'playlist_id'=>$playlistId,'playlist_url'=>$playlistUrl,'tracks'=>count($uris),
+                  'matched'=>$matched,'not_found'=>$notFound]);
     }
 
     if($act==='import_plain_text'){
@@ -406,10 +589,18 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         foreach(explode("\n", $text) as $line){
             $line = trim($line);
             if(!$line) continue;
-            // Formato: Título - Artista  ou  Título (artista opcional)
-            if(strpos($line,' - ')!==false){
-                [$title,$artist] = array_map('trim', explode(' - ',$line,2));
-            } else { $title=$line; $artist=''; }
+            // Remove numeração inicial tipo "1.", "01)", "1 -" etc.
+            $line = preg_replace('/^\s*\d+[\.\)]\s*/', '', $line);
+            $title = $line; $artist = '';
+            // Formato: "Título - Artista" (aceita -, – e — como separador, com ou sem espaços)
+            if(preg_match('/^(.+?)\s*[-–—]\s*(.+)$/u', $line, $m)){
+                $title = trim($m[1]); $artist = trim($m[2]);
+            } elseif(strpos($line, "\t") !== false){
+                // Formato colado de planilha (Título<TAB>Artista)
+                [$title,$artist] = array_map('trim', explode("\t", $line, 2));
+            } elseif(preg_match('/^(.+?)\s+by\s+(.+)$/i', $line, $m)){
+                $title = trim($m[1]); $artist = trim($m[2]);
+            }
             // Verificar duplicado pelo título normalizado
             $norm = strtolower(preg_replace('/\s+/','',$title));
             $found = null;
@@ -547,6 +738,20 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         jsonOut(['ok'=>true,'changed'=>$changed]);
     }
 
+    // ── Apaga totalmente várias músicas selecionadas ──
+    if($act==='bulk_delete_songs'){
+        needAuth();
+        $db      = loadDb();
+        $songIds = json_decode($_POST['song_ids']??'[]', true) ?: [];
+        if(!$songIds) jsonOut(['ok'=>false,'error'=>'Nenhuma música selecionada.']);
+        $deleted = 0;
+        foreach($songIds as $sid){
+            if(isset($db['songs'][$sid])){ unset($db['songs'][$sid]); $deleted++; }
+        }
+        saveDb($db);
+        jsonOut(['ok'=>true,'deleted'=>$deleted]);
+    }
+
     // ── Junta várias músicas selecionadas numa única entrada ──
     // A primeira da lista (ordem de seleção) fica como base (título/artista/
     // tom/bpm/ritmo/links); as tags de TODAS as selecionadas são unidas.
@@ -595,6 +800,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             'event_date'     => trim($_POST['event_date']??''),
             'event_time'     => trim($_POST['event_time']??''),
             'event_location' => trim($_POST['event_location']??''),
+            'order'          => count($db['tags']), // vai para o fim da sua secção por padrão
         ];
         saveDb($db);
         jsonOut(['ok'=>true,'id'=>$tid,'name'=>$name,'type'=>$type]);
@@ -635,6 +841,18 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $db['tags'][$tid]['archived'] = empty($db['tags'][$tid]['archived']);
         saveDb($db);
         jsonOut(['ok'=>true,'archived'=>$db['tags'][$tid]['archived']]);
+    }
+
+    // ── Guardar nova ordem de exibição das tags (listas, músicos, etc) ──
+    if($act==='reorder_tags'){
+        needAuth();
+        $db  = loadDb();
+        $ids = json_decode($_POST['tag_ids']??'[]', true) ?: [];
+        foreach($ids as $i=>$tid){
+            if(isset($db['tags'][$tid])) $db['tags'][$tid]['order'] = $i;
+        }
+        saveDb($db);
+        jsonOut(['ok'=>true]);
     }
 
     // ── Ritmos personalizados ──
@@ -920,8 +1138,9 @@ $canImport = file_exists(__DIR__ . '/playlists.json');
   --r:8px;--r2:14px;--tr:.18s cubic-bezier(.4,0,.2,1);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+html{scroll-behavior:smooth;overflow-x:hidden}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased;overflow-x:hidden;width:100%}
+input,select,textarea,button{max-width:100%}
 
 /* ── LAYOUT ── */
 .app{display:flex;min-height:100vh}
@@ -1022,14 +1241,14 @@ tr:hover .td-actions-inner{opacity:1}
 .chip-rhythm{background:var(--bg3);color:var(--text2);border-color:var(--border2)}
 
 /* ── MODAL ── */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;pointer-events:none;transition:opacity var(--tr)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:380;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;pointer-events:none;transition:opacity var(--tr)}
 .modal-overlay.open{opacity:1;pointer-events:all}
 .modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r2);width:100%;max-width:500px;transform:translateY(10px);transition:transform var(--tr);display:flex;flex-direction:column;max-height:calc(100vh - 48px);overflow:hidden}
 .modal-overlay.open .modal{transform:translateY(0)}
 .modal-title{font-family:'Playfair Display',serif;font-size:1.05rem;font-weight:700;padding:24px 24px 0}
 .modal-sub{font-size:.75rem;color:var(--text3);padding:6px 24px 14px}
 .modal-body{overflow-y:auto;flex:1;min-height:0;padding:0 24px 8px}
-.modal-footer{display:flex;gap:8px;justify-content:flex-end;padding:14px 24px 20px;flex-shrink:0;border-top:1px solid var(--border)}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;padding:14px 24px 20px;flex-shrink:0;border-top:1px solid var(--border);flex-wrap:wrap}
 
 /* ── FORMS ── */
 .fg{margin-bottom:14px}
@@ -1192,7 +1411,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   .main{min-width:0}
   .topbar{padding:12px 14px;flex-wrap:wrap;gap:8px}
   .topbar > div:first-child{flex:1 1 100%}
-  .topbar > div:last-child{width:100%;justify-content:flex-start}
+  .topbar > div:last-child{width:100%;justify-content:flex-start;flex-wrap:wrap}
   .topbar-title{font-size:.95rem}
   .btn{font-size:.72rem;padding:7px 11px}
 
@@ -1229,19 +1448,21 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   .chip{font-size:.55rem;padding:2px 5px}
 
   /* Modals */
-  .modal{max-width:100%!important;margin:0;border-radius:var(--r2) var(--r2) 0 0;max-height:92vh;overflow-y:auto}
+  .modal{max-width:100%!important;margin:0;border-radius:var(--r2) var(--r2) 0 0;max-height:92vh}
   .modal-overlay{align-items:flex-end;padding:0}
   .modal-body{padding:12px 16px}
   .fi-row{flex-direction:column}
   .fi-row > div{flex:none!important}
   .modal-footer{padding:12px 16px;gap:8px}
+  .sm-row > div[style*="display:flex"]{flex-wrap:wrap}
+  .modal [style*="display:flex"]{flex-wrap:wrap}
   .modal-footer .btn{flex:1}
 
   /* Toast */
   .toast{right:12px;bottom:16px;left:12px;text-align:center}
 
   /* Bulk bar */
-  .bulk-bar{padding:8px 10px;flex-wrap:wrap}
+  .bulk-bar{padding:32px 10px 8px;flex-wrap:wrap}
   .bulk-count{width:100%;text-align:center}
   .bulk-actions{width:100%;justify-content:center}
   .bulk-actions .btn{flex:1;min-width:100px}
@@ -1319,6 +1540,10 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     <div>
       <div class="topbar-title" id="currentViewTitle">Todas as Músicas</div>
       <div class="topbar-sub" id="currentViewSub"><?= $totalSongs ?> músicas no catálogo</div>
+      <a id="currentViewSpotifyLink" href="#" target="_blank" rel="noopener" style="display:none;align-items:center;gap:5px;font-size:.72rem;color:#1db954;text-decoration:none;margin-top:3px">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.623.623 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.077-.496 9.713 1.115a.623.623 0 01.206.857zm1.223-2.722a.779.779 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.779.779 0 01-.973-.52.779.779 0 01.52-.972c3.632-1.102 8.147-.568 11.233 1.329a.779.779 0 01.257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.935.935 0 11-.543-1.79c3.533-1.072 9.404-.865 13.115 1.338a.935.935 0 11-.954 1.609z"/></svg>
+        Abrir no Spotify
+      </a>
     </div>
     <span class="saving" id="savingInd">Salvando…</span>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
@@ -1594,7 +1819,7 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
 <div class="modal-overlay" id="tagManagerModal">
   <div class="modal" style="max-width:580px">
     <div class="modal-title">Gerir Tags</div>
-    <div class="modal-sub">Clica numa tag para editar ou apagar.</div>
+    <div class="modal-sub">Clica numa tag para editar ou apagar. Usa as setas ▲▼ para mudar a ordem em que listas, músicos, etc. aparecem no menu lateral.</div>
     <div class="modal-body" id="tagManagerBody" style="padding-bottom:16px"></div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('tagManagerModal')">Fechar</button>
@@ -1743,9 +1968,10 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="loginErr" style="color: red; margin-bottom: 10px; font-weight: bold;"></div>
       
       <form onsubmit="event.preventDefault(); doLogin();">
+        <input type="text" name="username" autocomplete="username" value="admin" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0" tabindex="-1" aria-hidden="true">
         <div class="fg">
           <label class="fl">Senha</label>
-          <input class="fi" type="password" id="loginPwd" autocomplete="current-password">
+          <input class="fi" type="password" id="loginPwd" name="password" autocomplete="current-password">
         </div>
       </form>
     </div>
@@ -1830,6 +2056,22 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
   </div>
 </div>
 
+<div class="modal-overlay" id="spotifyMatchModal">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title">🔗 Relacionar Músicas com Spotify</div>
+    <div class="modal-body">
+      <div style="font-size:.78rem;color:var(--text2);margin-bottom:12px">
+        Estas músicas não foram encontradas automaticamente no Spotify. Pesquisa e escolhe a faixa correcta para cada uma.
+      </div>
+      <div id="smList"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('spotifyMatchModal')">Fechar</button>
+      <button class="btn" id="smSyncBtn" style="background:#1db954;border-color:#1db954;color:#000;font-weight:600" onclick="closeModal('spotifyMatchModal'); openModal('spotifyExportModal'); doExportToSpotify();">Sincronizar agora</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="spotifyExportModal">
   <div class="modal" style="max-width:480px">
     <div class="modal-title" style="display:flex;align-items:center;gap:10px">
@@ -1853,10 +2095,14 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
       <div id="seStep2" style="display:none">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;margin-bottom:14px">
           <svg viewBox="0 0 24 24" fill="#1db954" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
-          <span style="font-size:.78rem;color:#1db954" id="seAuthedAs">Conta autorizada</span>
+          <span style="font-size:.78rem;color:#1db954;flex:1" id="seAuthedAs">Conta autorizada</span>
+          <button class="btn btn-ghost" style="font-size:.68rem;padding:3px 8px" onclick="renewSpotifyToken()" title="Renovar token, caso tenha expirado">🔄 Renovar</button>
         </div>
         <div id="seExistingPlaylist" style="display:none;font-size:.78rem;color:var(--text2);margin-bottom:10px"></div>
-        <div id="seTrackWarning" style="display:none;font-size:.75rem;color:var(--gold);padding:6px 10px;background:rgba(240,196,25,.08);border:1px solid rgba(240,196,25,.25);border-radius:6px;margin-bottom:10px"></div>
+        <div id="seTrackWarning" style="display:none;font-size:.75rem;color:var(--gold);padding:6px 10px;background:rgba(240,196,25,.08);border:1px solid rgba(240,196,25,.25);border-radius:6px;margin-bottom:10px">
+          <div id="seTrackWarningText"></div>
+          <button class="btn btn-ghost" style="margin-top:8px;font-size:.72rem;padding:5px 10px" onclick="openSpotifyMatchModal()">🔗 Relacionar manualmente</button>
+        </div>
         <div id="seExportResult" style="display:none"></div>
       </div>
     </div>
@@ -1919,6 +2165,8 @@ table tbody tr.song-row.selected td:first-child{border-left:3px solid var(--acce
     <button class="btn btn-primary" onclick="openBulkTagModal()">+ Adicionar Tag/Lista</button>
     <button class="btn btn-ghost" onclick="openBulkRemoveModal()">− Remover Tag/Lista</button>
     <button class="btn btn-ghost" id="mergeBtn" style="display:none" onclick="openMergeModal()">⇄ Juntar Duplicadas</button>
+    <button class="btn btn-ghost" onclick="doBulkSearchSpotify()">🔎 Buscar no Spotify</button>
+    <button class="btn btn-danger" onclick="doBulkDeleteSongs()">🗑 Apagar Música(s)</button>
   </div>
   <button class="bulk-clear" onclick="clearSelection()">✕ Limpar</button>
 </div>
@@ -2041,6 +2289,12 @@ function isSongVisible(s){
   });
 }
 
+// Ordena um array de tags pelo campo `order` (definido em "Gerir Tags").
+// Tags sem `order` definido (ainda não reordenadas) mantêm a ordem original entre si.
+function sortByOrder(arr){
+  return arr.slice().sort((a,b) => (a.order ?? 1e9) - (b.order ?? 1e9));
+}
+
 function renderSidebar(){
   const tags = DB.tags || {};
   const songs = Object.values(DB.songs || {}).filter(isSongVisible);
@@ -2059,10 +2313,10 @@ function renderSidebar(){
     .sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999'));
   const pastEvents = allEvents.filter(t=>t.event_date && t.event_date < today)
     .sort((a,b)=>b.event_date.localeCompare(a.event_date)); // mais recente primeiro
-  const lists = activeTags.filter(t=>t.type==='list');
-  const musicians = activeTags.filter(t=>t.type==='musician');
-  const statuses = activeTags.filter(t=>t.type==='status');
-  const customs = activeTags.filter(t=>!['list','event','musician','status'].includes(t.type));
+  const lists = sortByOrder(activeTags.filter(t=>t.type==='list'));
+  const musicians = sortByOrder(activeTags.filter(t=>t.type==='musician'));
+  const statuses = sortByOrder(activeTags.filter(t=>t.type==='status'));
+  const customs = sortByOrder(activeTags.filter(t=>!['list','event','musician','status'].includes(t.type)));
 
   function tagSection(label, tagArr, dotClass, isEvent){
     if(!tagArr.length) return '';
@@ -2209,6 +2463,13 @@ function applyFilters(){
   renderTable(songs, canOrder);
   document.getElementById('statVisible').textContent = songs.length;
   document.getElementById('currentViewSub').textContent = songs.length + ' músicas' + (activeTagFilter ? ' nesta lista' : ' no catálogo');
+  const spotifyLinkEl = document.getElementById('currentViewSpotifyLink');
+  if(activeTag && activeTag.spotify_id){
+    spotifyLinkEl.href = 'https://open.spotify.com/playlist/' + activeTag.spotify_id;
+    spotifyLinkEl.style.display = 'inline-flex';
+  } else {
+    spotifyLinkEl.style.display = 'none';
+  }
   updateExportSpotifyBtn();
 
   // ── Duração total ──
@@ -2671,6 +2932,22 @@ function submitBulkRemove(){
   });
 }
 
+function doBulkDeleteSongs(){
+  const ids = [...selectedSongIds];
+  if(!ids.length) return;
+  const msg = ids.length===1
+    ? 'Apagar esta música permanentemente? Esta ação não pode ser desfeita.'
+    : `Apagar estas ${ids.length} músicas permanentemente? Esta ação não pode ser desfeita.`;
+  if(!confirm(msg)) return;
+  post({ _action:'bulk_delete_songs', song_ids: JSON.stringify(ids) }, function(r){
+    if(r.ok){
+      showToast(r.deleted + ' música(s) apagada(s).');
+      clearSelection();
+      loadDbFromServer();
+    } else showToast(r.error||'Erro ao apagar.', true);
+  });
+}
+
 function openMergeModal(){
   const ids = [...selectedSongIds];
   if(ids.length < 2) return;
@@ -2721,7 +2998,7 @@ function renderTagsPicker(containerId, selectedTags){
   const tags = DB.tags || {};
   const el = document.getElementById(containerId);
   let html = '';
-  Object.values(tags).forEach(t => {
+  sortByOrder(Object.values(tags)).forEach(t => {
     const sel = selectedTags.includes(t.id);
     const selCls = t.type==='list'?'sel-list':t.type==='musician'?'sel-musician':'sel-custom';
     const archStyle = t.archived ? 'opacity:.45' : '';
@@ -2962,31 +3239,112 @@ function renderTagManager(){
   }
   const typeLabel = { list:'Lista', event:'Evento', musician:'Músico', status:'Status', custom:'Tag' };
   const typeCls   = { list:'chip-list', event:'chip-event', musician:'chip-musician', status:'chip-custom', custom:'chip-custom' };
-  let html = '<div style="display:flex;flex-direction:column;gap:4px">';
-  // Tags ativas primeiro, depois arquivadas
-  const sorted = Object.values(tags).sort((a,b)=> (a.archived?1:0) - (b.archived?1:0));
-  sorted.forEach(t => {
+  const all = Object.values(tags);
+  const archived = sortByOrder(all.filter(t=>t.archived));
+  const groups = [
+    ['list',     'Listas / Setlists'],
+    ['event',    'Eventos'],
+    ['musician', 'Músicos / Instrumentos'],
+    ['status',   'Status'],
+  ];
+  const knownTypes = groups.map(g=>g[0]);
+  const customActive = all.filter(t=>!t.archived && !knownTypes.includes(t.type));
+
+  function row(t, groupArr, idx){
     const cnt = songs.filter(s=>(s.tags||[]).includes(t.id)).length;
-    const archived = !!t.archived;
-    const archIcon = archived
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M10 12h4"/></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M9 12h6"/></svg>';
+    const isArchived = !!t.archived;
     const eventInfo = (t.type==='event' && (t.event_date||t.event_location))
       ? `<div style="font-size:.62rem;color:var(--text3);margin-top:1px">${escH(formatEventDate(t.event_date))}${t.event_time?' · '+escH(t.event_time):''}${t.event_location?' · '+escH(t.event_location):''}</div>`
       : '';
-    html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg3);cursor:pointer;${archived?'opacity:.5':''}" onclick="openEditTag('${t.id}')">
+    const archIcon = isArchived
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M10 12h4"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 7l1.5-3h15L21 7"/><path d="M5 7v12a1 1 0 001 1h12a1 1 0 001-1V7"/><path d="M9 12h6"/></svg>';
+    // Manípulo de arrastar: só faz sentido para tags ativas (arquivadas ficam sem, ordem não importa lá).
+    const dragHandle = !isArchived
+      ? `<span class="tag-drag-handle" data-tag-id="${t.id}" title="Arrastar para reordenar"
+          style="cursor:grab;touch-action:none;color:var(--text3);font-size:.95rem;line-height:1;padding:2px 4px;letter-spacing:-1px;user-select:none"
+          onclick="event.stopPropagation()">⠿</span>`
+      : '<span style="width:19px;display:inline-block"></span>';
+    return `<div class="tag-row" data-tag-id="${t.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg3);cursor:pointer;${isArchived?'opacity:.5':''}" onclick="openEditTag('${t.id}')">
+      ${dragHandle}
       <span class="chip ${typeCls[t.type]||'chip-custom'}">${typeLabel[t.type]||t.type}</span>
       <div style="flex:1">
-        <div style="font-size:.83rem">${escH(t.name)}${archived?' <span style=\"font-size:.6rem;color:var(--text3)\">(arquivada)</span>':''}</div>
+        <div style="font-size:.83rem">${escH(t.name)}${isArchived?' <span style=\"font-size:.6rem;color:var(--text3)\">(arquivada)</span>':''}</div>
         ${eventInfo}
       </div>
       <span style="font-family:'DM Mono',monospace;font-size:.6rem;color:var(--text3)">${cnt} músicas</span>
-      <button class="btn btn-ghost" style="padding:4px 7px" title="${archived?'Desarquivar':'Arquivar'}" onclick="event.stopPropagation();toggleArchiveTag('${t.id}')">${archIcon}</button>
+      <button class="btn btn-ghost" style="padding:4px 7px" title="${isArchived?'Desarquivar':'Arquivar'}" onclick="event.stopPropagation();toggleArchiveTag('${t.id}')">${archIcon}</button>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="color:var(--text3)"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
     </div>`;
+  }
+
+  function section(label, arr, type){
+    if(!arr.length) return '';
+    let h = `<div style="font-family:'DM Mono',monospace;font-size:.55rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);padding:10px 2px 4px">${label}</div>`;
+    h += `<div class="tag-group" data-group-type="${type||''}" style="display:flex;flex-direction:column;gap:4px">`;
+    arr.forEach((t,idx)=>{ h += row(t, arr, idx); });
+    h += '</div>';
+    return h;
+  }
+
+  let html = '';
+  groups.forEach(([type,label])=>{
+    const arr = sortByOrder(all.filter(t=>!t.archived && t.type===type));
+    html += section(label, arr, type);
   });
-  html += '</div>';
-  el.innerHTML = html;
+  html += section('Outras Tags', sortByOrder(customActive), '_custom');
+  html += section('Arquivadas', archived, '_archived');
+  el.innerHTML = html || '<div class="empty-state" style="padding:30px 0"><p>Nenhuma tag ainda.</p></div>';
+  initTagDragging(el);
+}
+
+// Arrasto por Pointer Events (funciona com mouse e toque, ao contrário do
+// drag-and-drop nativo do HTML5, que é pouco confiável em navegadores mobile).
+function initTagDragging(root){
+  root.querySelectorAll('.tag-drag-handle').forEach(handle=>{
+    handle.addEventListener('pointerdown', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      const row = handle.closest('.tag-row');
+      const group = handle.closest('.tag-group');
+      if(!row || !group) return;
+      const siblings = () => [...group.querySelectorAll('.tag-row')];
+      try{ handle.setPointerCapture(e.pointerId); }catch(_){}
+      row.classList.add('dragging');
+      row.style.opacity = '.55';
+      row.style.background = 'var(--bg4, var(--bg3))';
+
+      function onMove(ev){
+        const y = ev.clientY;
+        const all = siblings();
+        const idx = all.indexOf(row);
+        for(const sib of all){
+          if(sib===row) continue;
+          const rect = sib.getBoundingClientRect();
+          const mid = rect.top + rect.height/2;
+          const sibIdx = all.indexOf(sib);
+          if(y < mid && sibIdx < idx){ group.insertBefore(row, sib); break; }
+          if(y > mid && sibIdx > idx){ group.insertBefore(row, sib.nextSibling); break; }
+        }
+      }
+      function onUp(ev){
+        try{ handle.releasePointerCapture(e.pointerId); }catch(_){}
+        row.classList.remove('dragging');
+        row.style.opacity = '';
+        row.style.background = '';
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        const ids = siblings().map(r=>r.dataset.tagId);
+        ids.forEach((id,i)=>{ if(DB.tags[id]) DB.tags[id].order = i; });
+        renderSidebar();
+        post({ _action:'reorder_tags', tag_ids: JSON.stringify(ids) }, function(r){
+          if(!r.ok){ showToast(r.error||'Erro ao reordenar.', true); loadDbFromServer(); renderTagManager(); }
+        });
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp, { once:true });
+    });
+  });
 }
 
 function formatEventDate(dateStr){
@@ -3252,12 +3610,96 @@ let _spotifyAuthWindow = null;
 let _spotifyAuthInterval = null;
 const SPOTIFY_SCOPES = 'playlist-modify-private playlist-modify-public';
 
+let _seMissingSongs = [];
+let _smContext = 'export';
+let _afterSpotifyAuth = null;
+
+function openSpotifyMatchModal(context){
+  _smContext = context || 'export';
+  if(!_seMissingSongs.length){ showToast('Nenhuma música pendente.'); return; }
+  closeModal('spotifyExportModal');
+  document.getElementById('smSyncBtn').style.display = (_smContext==='export') ? '' : 'none';
+  const list = document.getElementById('smList');
+  list.innerHTML = _seMissingSongs.map((s,i) => `
+    <div class="sm-row" id="smRow${i}" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="font-weight:600;font-size:.85rem">${escH(s.title||'(sem título)')}</div>
+      <div style="font-size:.75rem;color:var(--text2);margin-bottom:8px">${escH(s.artist||'')}</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input type="text" id="smQuery${i}" value="${escH((s.title||'')+' '+(s.artist||''))}" style="flex:1;font-size:.78rem;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text)">
+        <button class="btn btn-ghost" style="font-size:.72rem;padding:6px 10px" onclick="searchSpotifyMatch(${i})">Buscar</button>
+      </div>
+      <div id="smResults${i}"><div style="font-size:.72rem;color:var(--text3)">Na fila…</div></div>
+    </div>`).join('');
+  openModal('spotifyMatchModal');
+  searchSpotifyMatchQueue(0);
+}
+
+function searchSpotifyMatchQueue(i){
+  if(i >= _seMissingSongs.length) return;
+  searchSpotifyMatch(i, function(){ searchSpotifyMatchQueue(i+1); });
+}
+
+function searchSpotifyMatch(i, done){
+  const q = document.getElementById('smQuery'+i).value.trim();
+  const resEl = document.getElementById('smResults'+i);
+  if(!q){ resEl.innerHTML=''; if(done) done(); return; }
+  resEl.innerHTML = '<div style="font-size:.72rem;color:var(--text3)">A procurar…</div>';
+  post({ _action:'spotify_search_multi', user_token:_spotifyUserToken, q }, function(r){
+    if(!r.ok){
+      const isExpired = /expirad|expired|token/i.test(r.error||'');
+      const isNotRegistered = /not registered|403/i.test(r.error||'');
+      if(isExpired){
+        resEl.innerHTML = `<div style="font-size:.72rem;color:#e55">Sessão do Spotify expirada.
+          <button class="btn btn-ghost" style="margin-left:6px;font-size:.68rem;padding:3px 8px" onclick="renewSpotifyToken(function(){ searchSpotifyMatch(${i}, ${done?`function(){searchSpotifyMatchQueue(${i}+1)}`:'null'}) })">🔄 Renovar token</button>
+        </div>`;
+        return; // pausa a fila até renovar, evita repetir o erro em todas as músicas
+      }
+      if(isNotRegistered){
+        resEl.innerHTML = `<div style="font-size:.72rem;color:#e55">${escH(r.error||'Conta não registada no app.')}
+          <div style="margin-top:6px;padding:6px 8px;background:rgba(255,255,255,.05);border-radius:6px">
+            O Spotify bloqueia <strong>todas</strong> as chamadas da API para essa conta enquanto ela não estiver na lista de utilizadores permitidos do app (por isso nem dá pra descobrir automaticamente qual conta é).<br><br>
+            Clica em "Trocar de conta Spotify" abaixo. Na tela que abrir, repara qual conta aparece em <em>"Continuar como…"</em> (ou faz logout dessa conta no site do Spotify antes, se quiser trocar). Depois confere se é essa mesma conta que está em <strong>Dashboard → Settings → User Management</strong> no developer.spotify.com.
+          </div>
+          <button class="btn btn-ghost" style="margin-top:6px;font-size:.68rem;padding:3px 8px" onclick="spotifyForceRelogin()">🔁 Trocar de conta Spotify</button>
+        </div>`;
+        return;
+      }
+      resEl.innerHTML = `<div style="font-size:.72rem;color:#e55">${escH(r.error||'Erro na busca.')}</div>`;
+    }
+    else if(!r.results.length){ resEl.innerHTML = '<div style="font-size:.72rem;color:var(--text3)">Nenhum resultado.</div>'; }
+    else {
+      resEl.innerHTML = r.results.map((t,j) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;cursor:pointer" class="sm-result" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''" onclick='selectSpotifyMatch(${i}, ${JSON.stringify(t).replace(/'/g,"&#39;")})'>
+          ${t.image?`<img src="${escH(t.image)}" style="width:36px;height:36px;border-radius:4px">`:''}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.78rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(t.name)}</div>
+            <div style="font-size:.72rem;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(t.artists)}</div>
+          </div>
+        </div>`).join('');
+    }
+    if(done) done();
+  });
+}
+
+function selectSpotifyMatch(i, track){
+  const s = _seMissingSongs[i];
+  post({ _action:'set_song_spotify', song_id:s.id||s.uuid, spotify_uri:track.uri, spotify_url:track.url, duration_ms:track.duration_ms||0 }, function(r){
+    if(r.ok){
+      document.getElementById('smRow'+i).innerHTML =
+        `<div style="display:flex;align-items:center;gap:8px;color:#1db954;font-size:.8rem">✅ ${escH(s.title)} → ${escH(track.name)} — ${escH(track.artists)}</div>`;
+      _seMissingSongs[i]._matched = true;
+      loadDbFromServer();
+    } else showToast(r.error||'Erro ao gravar.', true);
+  });
+}
+
 function openExportSpotify(){
   if(!activeTagFilter){ showToast('Seleciona uma lista ou evento primeiro.', true); return; }
   const tag = (DB.tags||{})[activeTagFilter];
   if(!tag){ showToast('Tag não encontrada.', true); return; }
   const songs = Object.values(DB.songs||{}).filter(s=>(s.tags||[]).includes(activeTagFilter));
   const withSpotify = songs.filter(s=>s.spotify_uri||(s.spotify_url||'').includes('track/'));
+  _seMissingSongs = songs.filter(s=>!(s.spotify_uri||(s.spotify_url||'').includes('track/')));
   document.getElementById('spotifyExportInfo').innerHTML =
     `<strong>${escH(tag.name)}</strong> — ${songs.length} músicas, ${withSpotify.length} com link Spotify`;
   const existing = tag.spotify_id||'';
@@ -3272,7 +3714,7 @@ function openExportSpotify(){
   if(withSpotify.length < songs.length){
     const missing = songs.length - withSpotify.length;
     document.getElementById('seTrackWarning').style.display = '';
-    document.getElementById('seTrackWarning').textContent =
+    document.getElementById('seTrackWarningText').textContent =
       `⚠ ${missing} música${missing>1?'s':''} sem link Spotify ${missing>1?'serão ignoradas':'será ignorada'}.`;
   } else {
     document.getElementById('seTrackWarning').style.display = 'none';
@@ -3290,21 +3732,45 @@ function openExportSpotify(){
   openModal('spotifyExportModal');
 }
 
+function spotifyForceRelogin(){
+  localStorage.removeItem('spotify_access_token');
+  localStorage.removeItem('spotify_refresh_token');
+  localStorage.removeItem('spotify_token_expires');
+  localStorage.removeItem('spotify_pkce_verifier');
+  localStorage.removeItem('spotify_oauth_state');
+  _spotifyUserToken = null;
+  showToast('Sessão Spotify limpa. A abrir autorização…');
+  startSpotifyAuth();
+}
 async function startSpotifyAuth(){
   const clientId = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: getenv('CLIENT_ID') ?: '') ?>';
   if(!clientId){ showErr('spotifyExportErr','CLIENT_ID não configurado no .env.'); return; }
+  // Abre a janela já aqui, ANTES de qualquer await — em navegadores mobile (Safari/Chrome iOS),
+  // window.open() chamado depois de um await deixa de contar como resposta direta ao clique
+  // e o popup é bloqueado silenciosamente.
+  const authWin = window.open('', 'spotify_auth', 'width=480,height=640');
   const redirectUri = '<?= addslashes(spotifyRedirectUri()) ?>';
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
-  sessionStorage.setItem('spotify_pkce_verifier', verifier);
+  localStorage.setItem('spotify_pkce_verifier', verifier);
   const state = Math.random().toString(36).slice(2);
-  sessionStorage.setItem('spotify_oauth_state', state);
+  localStorage.setItem('spotify_oauth_state', state);
   const params = new URLSearchParams({
     response_type:'code', client_id:clientId,
     scope:SPOTIFY_SCOPES, redirect_uri:redirectUri,
-    state, code_challenge_method:'S256', code_challenge:challenge
+    state, code_challenge_method:'S256', code_challenge:challenge,
+    show_dialog:'true'
   });
-  _spotifyAuthWindow = window.open('https://accounts.spotify.com/authorize?'+params, 'spotify_auth', 'width=480,height=640');
+  const authUrl = 'https://accounts.spotify.com/authorize?'+params;
+  if(authWin){
+    authWin.location.href = authUrl;
+    _spotifyAuthWindow = authWin;
+  } else {
+    // Popup bloqueado mesmo assim: navega na própria aba como alternativa.
+    localStorage.setItem('spotify_auth_return', window.location.href);
+    window.location.href = authUrl;
+    return;
+  }
   document.getElementById('seAuthWaiting').style.display = '';
   _spotifyAuthInterval = setInterval(checkSpotifyAuthAuto, 1000);
 }
@@ -3326,19 +3792,34 @@ function spotifyAuthError(msg){
 }
 function checkSpotifyAuthAuto(){
   try {
-    if(!_spotifyAuthWindow || _spotifyAuthWindow.closed){ clearInterval(_spotifyAuthInterval); checkSpotifyAuthManual(); return; }
-    const hash = _spotifyAuthWindow.location.hash;
-    if(hash && hash.includes('access_token')){ extractSpotifyToken(_spotifyAuthWindow.location.href); _spotifyAuthWindow.close(); clearInterval(_spotifyAuthInterval); }
+    if(!_spotifyAuthWindow || _spotifyAuthWindow.closed){ clearInterval(_spotifyAuthInterval); checkSpotifyAuthManual(); }
   } catch(e){}
 }
 function checkSpotifyAuthManual(){
   clearInterval(_spotifyAuthInterval);
-  const token = sessionStorage.getItem('spotify_access_token');
-  if(token){ _spotifyUserToken = token; showSeStep2(); }
+  const token = localStorage.getItem('spotify_access_token');
+  if(token){
+    _spotifyUserToken = token;
+    if(_afterSpotifyAuth){ const fn=_afterSpotifyAuth; _afterSpotifyAuth=null; fn(); }
+    else showSeStep2();
+  }
   else showErr('spotifyExportErr','Autorização não detectada. Tenta novamente.');
 }
-function extractSpotifyToken(token){
-  if(token){ _spotifyUserToken = token; sessionStorage.setItem('spotify_access_token', token); showSeStep2(); }
+function ensureSpotifyAuthed(cb){
+  const cached = localStorage.getItem('spotify_access_token');
+  if(cached){ _spotifyUserToken = cached; cb(); return; }
+  if(_spotifyUserToken){ cb(); return; }
+  _afterSpotifyAuth = cb;
+  showToast('A abrir autorização do Spotify…');
+  startSpotifyAuth();
+}
+function doBulkSearchSpotify(){
+  const ids = [...selectedSongIds];
+  if(!ids.length) return;
+  const songs = ids.map(id => DB.songs[id]).filter(Boolean);
+  if(!songs.length) return;
+  _seMissingSongs = songs;
+  ensureSpotifyAuthed(function(){ openSpotifyMatchModal('bulk'); });
 }
 function showSeStep2(){
   document.getElementById('seStep1').style.display = 'none';
@@ -3347,8 +3828,50 @@ function showSeStep2(){
   fetch('https://api.spotify.com/v1/me',{headers:{Authorization:'Bearer '+_spotifyUserToken}})
     .then(r=>r.json()).then(me=>{
       if(me.id) document.getElementById('seAuthedAs').textContent = `Conta: ${me.display_name||me.id}`;
-      else { _spotifyUserToken=null; showErr('spotifyExportErr','Token inválido. Autoriza novamente.'); document.getElementById('seStep1').style.display=''; document.getElementById('seStep2').style.display='none'; document.getElementById('seExportBtn').style.display='none'; }
+      else showSpotifyTokenExpired();
     }).catch(()=>{});
+}
+function showSpotifyTokenExpired(){
+  document.getElementById('spotifyExportErr').innerHTML =
+    `<div class="alert alert-err">Sessão do Spotify expirada.
+      <button class="btn btn-ghost" style="margin-left:8px;font-size:.72rem;padding:4px 10px" onclick="renewSpotifyToken()">🔄 Renovar token</button>
+    </div>`;
+}
+function renewSpotifyToken(cb){
+  const clientId = '<?= addslashes(envVal('CLIENT_ID') ?: envVal('SPOTIPY_CLIENT_ID') ?: getenv('CLIENT_ID') ?: '') ?>';
+  const refreshToken = localStorage.getItem('spotify_refresh_token');
+  if(!refreshToken){
+    // Sem refresh_token guardado (autorização antiga): precisa de novo login completo.
+    _spotifyUserToken = null;
+    document.getElementById('seStep1').style.display = '';
+    document.getElementById('seStep2').style.display = 'none';
+    document.getElementById('seExportBtn').style.display = 'none';
+    showErr('spotifyExportErr','Não há sessão para renovar. Autoriza novamente.');
+    return;
+  }
+  showToast('A renovar sessão do Spotify…');
+  fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type:'refresh_token', refresh_token:refreshToken, client_id:clientId })
+  }).then(r=>r.json()).then(data=>{
+    if(data.access_token){
+      localStorage.setItem('spotify_access_token', data.access_token);
+      if(data.refresh_token) localStorage.setItem('spotify_refresh_token', data.refresh_token);
+      if(data.expires_in) localStorage.setItem('spotify_token_expires', String(Date.now()+data.expires_in*1000));
+      _spotifyUserToken = data.access_token;
+      document.getElementById('spotifyExportErr').innerHTML = '';
+      showToast('Sessão renovada!');
+      showSeStep2();
+      if(cb) cb(); // só age depois de confirmar o token novo (evita busca com token velho)
+    } else {
+      _spotifyUserToken = null;
+      document.getElementById('seStep1').style.display = '';
+      document.getElementById('seStep2').style.display = 'none';
+      document.getElementById('seExportBtn').style.display = 'none';
+      showErr('spotifyExportErr','Não foi possível renovar. Autoriza novamente. ('+(data.error_description||data.error||'')+')');
+    }
+  }).catch(()=>{ showToast('Erro de rede ao renovar token.', true); });
 }
 function doExportToSpotify(){
   if(!activeTagFilter||!_spotifyUserToken) return;
@@ -3362,8 +3885,11 @@ function doExportToSpotify(){
       label.textContent = 'Actualizar Playlist';
       const el = document.getElementById('seExportResult');
       el.style.display = '';
+      const matchedInfo = r.matched ? `<br>🔎 ${r.matched} identificada(s) automaticamente no Spotify` : '';
+      const notFoundInfo = (r.not_found && r.not_found.length)
+        ? `<br><span style="color:#f0c419">⚠ Não encontradas: ${escH(r.not_found.join(', '))}</span>` : '';
       el.innerHTML = `<div style="padding:10px 12px;background:rgba(29,185,84,.1);border:1px solid rgba(29,185,84,.3);border-radius:8px;font-size:.8rem">
-        ✅ ${r.tracks} músicas exportadas!<br>
+        ✅ ${r.tracks} músicas exportadas!${matchedInfo}${notFoundInfo}<br>
         <a href="${escH(r.playlist_url)}" target="_blank" style="color:#1db954;font-weight:600">Abrir playlist no Spotify →</a>
       </div>`;
       document.getElementById('seExistingPlaylist').style.display = '';
@@ -3372,7 +3898,9 @@ function doExportToSpotify(){
       loadDbFromServer(); showToast(`Playlist exportada! ${r.tracks} músicas.`);
     } else {
       label.textContent = 'Tentar novamente';
-      showErr('spotifyExportErr', r.error||'Erro ao exportar.');
+      const errMsg = r.error||'Erro ao exportar.';
+      if(/expirad|token/i.test(errMsg)) showSpotifyTokenExpired();
+      else showErr('spotifyExportErr', errMsg);
     }
   });
 }
@@ -3525,8 +4053,8 @@ function openPrintModal(){
   // ── Popula select da lista ──
   let html = '<option value="">Todas as Músicas</option>';
   const eventTags = activeTags.filter(t=>t.type==='event').sort((a,b)=>(a.event_date||'').localeCompare(b.event_date||''));
-  const listTags  = activeTags.filter(t=>t.type==='list');
-  const otherTags = activeTags.filter(t=>!['event','list'].includes(t.type));
+  const listTags  = sortByOrder(activeTags.filter(t=>t.type==='list'));
+  const otherTags = sortByOrder(activeTags.filter(t=>!['event','list'].includes(t.type)));
   if(eventTags.length){ html+='<optgroup label="🎤 Eventos">'; eventTags.forEach(t=>{ const d=t.event_date?' — '+formatEventDate(t.event_date):''; html+=`<option value="${t.id}">${escH(t.name)}${escH(d)}</option>`; }); html+='</optgroup>'; }
   if(listTags.length){  html+='<optgroup label="📋 Listas">'; listTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
   if(otherTags.length){ html+='<optgroup label="🏷️ Tags">';  otherTags.forEach(t=>{ html+=`<option value="${t.id}">${escH(t.name)}</option>`; }); html+='</optgroup>'; }
